@@ -1,0 +1,18 @@
+# Default initial positions for piper's ros2_control fake system
+
+initial_positions:
+  # joint1: 0.538374172
+  # joint2: 0.576925412
+  # joint3: 0.36826028400000005
+  # joint4: 0.0
+  # joint5: 0.0
+  # joint6: 0.05721632
+  # joint7: 0.0697
+
+  joint1: 0
+  joint2: 0
+  joint3: 0
+  joint4: 0
+  joint5: 0
+  joint6: 0
+  joint7: 0

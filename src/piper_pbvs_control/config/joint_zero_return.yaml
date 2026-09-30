@@ -1,0 +1,13 @@
+joint_zero_return:
+  ros__parameters:
+    # Safety interlock: false only plans both zero-return trajectories.
+    enable_motion: false
+
+    arm_group_name: arm
+    gripper_group_name: gripper
+    arm_zero_tolerance: 0.01
+    gripper_zero_tolerance: 0.003
+    zero_velocity_scaling_factor: 0.10
+    zero_acceleration_scaling_factor: 0.10
+    zero_timeout: 30.0
+    joint_feedback_timeout: 0.5

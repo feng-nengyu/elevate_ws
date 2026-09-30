@@ -1,0 +1,1018 @@
+Earlier messages are available — press ctrl + t to view the full transcript
+          DeclareLaunchArgument(
+              'confirmation_topic', default_value='/elevator/button_confirmed'
+          ),
+          DeclareLaunchArgument('confirmation_timeout', default_value='1.0'),
+          DeclareLaunchArgument('plane_outer_scale', default_value='2.0'),
+          DeclareLaunchArgument('plane_inner_scale', default_value='1.0'),
+          DeclareLaunchArgument(
+              'plane_ransac_threshold',
+              default_value='0.003',
+          ),
+          DeclareLaunchArgument('plane_min_points', default_value='60'),
+          DeclareLaunchArgument(
+              'plane_min_inlier_ratio',
+              default_value='0.6',
+          ),
+          DeclareLaunchArgument('plane_max_rms', default_value='0.004'),
+          DeclareLaunchArgument(
+              'plane_max_depth_deviation',
+              default_value='0.03',
+          ),
+          DeclareLaunchArgument('plane_sample_step', default_value='2'),
+          DeclareLaunchArgument('plane_lock_sample_count', default_value='5'),
+          DeclareLaunchArgument('button_cache_sample_count', default_value='3'),
+          DeclareLaunchArgument(
+              'button_cache_max_position_spread',
+              default_value='0.003',
+          ),
+          DeclareLaunchArgument(
+              'plane_lock_max_offset_spread',
+              default_value='0.005',
+          ),
+          DeclareLaunchArgument(
+              'plane_lock_max_angle_spread',
+              default_value='0.052359878',
+          ),
+      ]
+
+      camera = _include(
+              ),
+              'contact_consecutive_samples': LaunchConfiguration(
+                  'contact_consecutive_samples'
+              ),
+              'confirmation_required': LaunchConfiguration(
+                  'confirmation_required'
+              ),
+              'confirmation_topic': LaunchConfiguration('confirmation_topic'),
+              'confirmation_timeout': LaunchConfiguration(
+                  'confirmation_timeout'
+              ),
+              'plane_outer_scale': LaunchConfiguration('plane_outer_scale'),
+              'plane_inner_scale': LaunchConfiguration('plane_inner_scale'),
+              'plane_ransac_threshold': LaunchConfiguration(
+                  'plane_ransac_threshold'
+              ),
+              'plane_min_points': LaunchConfiguration(
+                  'plane_min_points'
+              ),
+              'plane_min_inlier_ratio': LaunchConfiguration(
+                  'plane_min_inlier_ratio'
+              ),
+              'plane_max_rms': LaunchConfiguration('plane_max_rms'),
+              'plane_max_depth_deviation': LaunchConfiguration(
+                  'plane_max_depth_deviation'
+              ),
+              'plane_sample_step': LaunchConfiguration('plane_sample_step'),
+              'plane_lock_sample_count': LaunchConfiguration(
+                  'plane_lock_sample_count'
+              ),
+              'button_cache_sample_count': LaunchConfiguration(
+                  'button_cache_sample_count'
+              ),
+              'button_cache_max_position_spread': LaunchConfiguration(
+                  'button_cache_max_position_spread'
+              ),
+              'plane_lock_max_offset_spread': LaunchConfiguration(
+                  'plane_lock_max_offset_spread'
+              ),
+              'plane_lock_max_angle_spread': LaunchConfiguration(
+                  'plane_lock_max_angle_spread'
+              ),
+          },
+      )
+      joint_zero_return = _include(
+          'piper_pbvs_control',
+          'joint_zero_return.launch.py',
+          'start_joint_zero_return',
+          {
+              'enable_motion': LaunchConfiguration('enable_motion'),
+              'zero_velocity_scaling_factor': LaunchConfiguration(
+                  'zero_velocity_scaling_factor'
+              ),
+              'zero_acceleration_scaling_factor': LaunchConfiguration(
+                  'zero_acceleration_scaling_factor'
+              ),
+  """Regression checks for the TCP value shared by driver and MoveIt."""
+
+  from pathlib import Path
+  import re
+
+  import pytest
+
+
+  REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+  EXPECTED_TCP_OFFSET_Z = 0.1468
+
+
+  def _read(relative_path):
+      return (REPOSITORY_ROOT / relative_path).read_text(encoding='utf-8')
+
+
+  def _first_float(pattern, text):
+      match = re.search(pattern, text)
+      assert match is not None
+      return float(match.group(1))
+
+
+  def test_driver_and_launch_defaults_share_calibrated_tcp_offset():
+      """The live launch path must not silently override driver geometry."""
+      driver = _read('piper/piper/piper_ctrl_single_node.py')
+      driver_launch = _read('piper/launch/start_single_piper.launch.py')
+      system_launch = _read('piper_launch/launch/all.launch.py')
+
+      values = (
+          _first_float(
+              r"declare_parameter\('tcp_offset_z',\s*([0-9.]+)\)",
+              driver,
+          ),
+          _first_float(
+              r"'tcp_offset_z',\s*default_value='([0-9.]+)'",
+              driver_launch,
+          ),
+          _first_float(
+              r"'tcp_offset_z',\s*default_value='([0-9.]+)'",
+              system_launch,
+          ),
+      )
+    
+      assert values == pytest.approx((EXPECTED_TCP_OFFSET_Z,) * 3)
+
+
+  def test_moveit_uses_description_xacro_with_the_same_tcp_link():
+      """The MoveIt config imports the description with calibrated tcp_link."""
+      description = _read('piper_description/urdf/piper_description.xacro')
+      moveit_xacro = _read(
+          'piper_moveit/piper_with_gripper_moveit/config/piper.urdf.xacro'
+      )
+      tcp_joint = re.search(
+          r'<joint name="gripper_base_to_tcp".*?</joint>',
+          description,
+          flags=re.DOTALL,
+      )
+
+      assert tcp_joint is not None
+      tcp_value = _first_float(
+          r'<origin xyz="0 0 ([0-9.]+)"',
+          tcp_joint.group(0),
+      )
+      assert tcp_value == pytest.approx(EXPECTED_TCP_OFFSET_Z)
+      assert (
+          '$(find piper_description)/urdf/piper_description.xacro'
+          in moveit_xacro
+      )
+
+$ /bin/bash -lc "grep -n \"stable_sample_count\\|target_acquire_timeout\\|
+confirmation_timeout\" piper_pbvs_control/launch/elevator_press.launch.py; sed
+-n '400,470p' piper_pbvs_control/launch/elevator_press.launch.py"
+status: Completed · exit 0
+  191:        DeclareLaunchArgument('confirmation_timeout',
+  default_value='1.0'),
+  459:                    'confirmation_timeout': ParameterValue(
+  460:                        LaunchConfiguration('confirmation_timeout'),
+                          )
+                      ),
+                      'sequence_transition_acceleration_scaling_factor': (
+                          ParameterValue(
+                              LaunchConfiguration(
+                                  'sequence_transition_acceleration_'
+                                  'scaling_factor'
+                              ),
+                              value_type=float,
+                          )
+                      ),
+                      'sequence_contact_velocity_scaling_factor':
+                      ParameterValue(
+                          LaunchConfiguration(
+                              'sequence_contact_velocity_scaling_factor'
+                          ),
+                          value_type=float,
+                      ),
+                      (
+                          'sequence_contact_acceleration_scaling_factor'
+                      ): ParameterValue(
+                          LaunchConfiguration(
+                              'sequence_contact_acceleration_scaling_factor'
+                          ),
+                          value_type=float,
+                      ),
+                      'contact_baseline_samples': ParameterValue(
+                          LaunchConfiguration('contact_baseline_samples'),
+                          value_type=int,
+                      ),
+                      'sequence_contact_baseline_samples': ParameterValue(
+                          LaunchConfiguration(
+                              'sequence_contact_baseline_samples'
+                          ),
+                          value_type=int,
+                      ),
+                      'motor_feedback_timeout': ParameterValue(
+                          LaunchConfiguration('motor_feedback_timeout'),
+                          value_type=float,
+                      ),
+                      'contact_current_delta_a': ParameterValue(
+                          LaunchConfiguration('contact_current_delta_a'),
+                          value_type=float,
+                      ),
+                      'hard_current_delta_a': ParameterValue(
+                          LaunchConfiguration('hard_current_delta_a'),
+                          value_type=float,
+                      ),
+                      'contact_consecutive_samples': ParameterValue(
+                          LaunchConfiguration('contact_consecutive_samples'),
+                          value_type=int,
+                      ),
+                      'confirmation_required': ParameterValue(
+                          LaunchConfiguration('confirmation_required'),
+                          value_type=bool,
+                      ),
+                      'confirmation_topic': ParameterValue(
+                          LaunchConfiguration('confirmation_topic'),
+                          value_type=str,
+                      ),
+                      'confirmation_timeout': ParameterValue(
+                          LaunchConfiguration('confirmation_timeout'),
+                          value_type=float,
+                      ),
+                  },
+              ],
+          ),
+          Node(
+              package='piper_pbvs_control',
+              executable='elevator_sequence',
+              name='elevator_sequence',
+              output='screen',
+
+file changes: Completed · 3 changes
+
+────────────────────────────────────────────────────────────────────────────────
+
+• 第一处修改已经落到代码：横向验收现在计算“相对补偿目标的残差”，而不是把离按钮中
+  心 9～19 mm 当成合格；默认补偿归零，残差上限 6 mm。快照等待默认提高为 12 秒，
+  并已从总 launch 暴露。现在先跑控制数学与启动配置测试，确认参数和几何计算没有回
+  归。
+
+────────────────────────────────────────────────────────────────────────────────
+
+• 定向测试通过。关于你说的“先模拟一圈”：我不建议这次立刻把它做成默认真机动作，因
+  为它会新增三到四段真实轨迹，必须先证明新的中心定位和 12 秒快照有效。当前实现先
+  完成“全部按钮在首键前冻结并验证”；预演方案会设计成在 80 mm 安全离面平面访问
+  1→6→OK→1，并确保计时从第一次真实接触才开始，而不是把近面板试走直接混入现有按压
+  状态机。
+
+────────────────────────────────────────────────────────────────────────────────
+
+• 我在复核几何实现时发现一个必须顺手处理的细节：preserve_current_roll 会让控制姿
+  态的水平轴与视觉面板水平轴不同，而补偿实际是沿视觉面板轴施加的。横向残差必须用
+  同一条视觉轴扣除补偿，否则换一个末端滚转角就会误判。我正在把这个坐标轴归属也纳
+  入测试。
+
+────────────────────────────────────────────────────────────────────────────────
+
+• 最终构建已通过，实际 --show-args 也确认生效：水平补偿 0.0、横向残差范围 0～
+  0.006 m、完整快照等待 12.0 s。我再做最后一次工作区和差异检查，然后给你下一次真
+  机验证的最短命令与预期日志。
+
+────────────────────────────────────────────────────────────────────────────────
+
+• 已完成前两项改进：
+
+  - 横向验收不再接受离按钮中心 9～19 mm，现在检查“相对补偿目标的残差”，默认允许
+    0～6 mm。
+
+  - 水平补偿默认归零为 0.0 m。
+  - 快照等待由 5 s 提高到 12 s，并暴露为 launch 参数。
+  - 已处理 preserve_current_roll 下视觉面板轴与工具轴不同的问题。
+  - 测试：93 passed；启动包 5 passed, 1 skipped。
+  - 两个相关 ROS 包构建通过。
+
+  你的预演思路是成立的：第一次真实接触前的观察、快照和安全路径验证不计入三秒窗
+  口。但它只能减少识别和规划风险，实际 1→6、6→OK 的运动、接触搜索仍必须分别小于
+  三秒。
+
+  预演方案已经记录在elevate_ws/src/docs/design/20260918-sequence-preflight.md，
+  本轮还没有让机械臂自动执行预演轨迹。先验证中心定位和 12 秒快照，再启用
+  1→6→OK→1 的 80 mm 安全离面预演更稳妥。
+
+  下一次启动确保使用：
+
+  coarse_horizontal_offset:=0.0
+  coarse_vertical_offset:=0.0
+  coarse_lateral_error_min:=0.0
+  coarse_lateral_error_max:=0.006
+  target_acquire_timeout:=12.0
+  tcp_offset_z:=0.1468
+  confirmation_required:=false
+
+  先真正单独按一次 key_1：
+
+  ros2 action send_goal /press_button \
+    piper_msgs/action/PressButton \
+    "{target_name: 'key_1'}" --feedback
+
+  确认落点居中后，直接测试 16：
+
+  ros2 action send_goal /run_elevator_sequence \
+    piper_msgs/action/PressButton \
+    "{target_name: '16'}" --feedback
+
+  这次应先最多等待 12 秒准备 key_1、key_6、key_ok，完整快照成功后才开始运动。改
+  动目前已构建但尚未提交和推送。
+
+
+› 给我完整的测试命令和流程
+
+
+• 下面是当前版本的完整测试流程。它会真实移动并按压机械臂。当前已实现“首键前最多
+  等待 12 秒准备全部按钮快照”，尚未实现 1→6→OK→1 的物理预演轨迹。
+
+  ## 0. 停止旧系统
+
+  如果旧的 ros2 launch 仍在运行，先在对应终端按 Ctrl+C，确保只启动一套系统。
+
+  检查：
+
+  ros2 node list
+
+  不应残留旧的：
+
+  /piper_pbvs_controller
+  /elevator_sequence
+  /yolo_ros2
+  /move_group
+
+  ## 1. 重新构建
+
+  cd ~/elevate_ws
+  source /opt/ros/humble/setup.bash
+
+  colcon build --symlink-install \
+    --packages-select piper_pbvs_control piper_launch
+
+  source install/setup.bash
+
+  预期：
+
+  Summary: 2 packages finished
+
+  确认新参数：
+
+  ros2 launch piper_launch all.launch.py --show-args \
+    | grep -A2 -E \
+    'target_acquire_timeout|coarse_horizontal_offset|coarse_lateral_error_(min|
+    max)'
+
+  预期默认值：
+
+  coarse_horizontal_offset: 0.0
+  coarse_lateral_error_min: 0.0
+  coarse_lateral_error_max: 0.006
+  target_acquire_timeout: 12.0
+
+  ## 2. 检查 CAN
+
+  ip -details link show can0
+
+  如果不是 UP：
+
+  cd ~/elevate_ws
+  bash can_activate.sh can0 1000000
+
+  再次确认：
+
+  ip -details link show can0
+
+  ## 3. 启动完整真机系统
+
+  打开一个新终端：
+
+  cd ~/elevate_ws
+  source /opt/ros/humble/setup.bash
+  source install/setup.bash
+  mkdir -p ~/elevate_ws/test_logs
+
+  启动：
+
+  ros2 launch piper_launch all.launch.py \
+    model_path:=/home/xie/elevate_ws/best.pt \
+    auto_enable:=false \
+    enable_motion:=true \
+    enable_guarded_press:=true \
+    confirmation_required:=false \
+    target_acquire_timeout:=12.0 \
+    max_inter_button_interval:=3.0 \
+    button_cache_sample_count:=3 \
+    button_cache_max_position_spread:=0.003 \
+    initialization_speed_percent:=12 \
+    initialization_duration:=12.0 \
+    initialization_max_step:=0.002 \
+    trajectory_speed_percent:=10 \
+    arm_goal_tolerance:=0.005 \
+    trajectory_settle_cycles:=10 \
+    zero_velocity_scaling_factor:=0.10 \
+    zero_acceleration_scaling_factor:=0.10 \
+    coarse_standoff:=0.08 \
+    coarse_correction_attempts:=3 \
+    coarse_horizontal_offset:=0.0 \
+    coarse_vertical_offset:=0.0 \
+    coarse_lateral_error_min:=0.0 \
+    coarse_lateral_error_max:=0.006 \
+    tcp_offset_z:=0.1468 \
+    distance_mm:=0.0 \
+    home_joint_positions:="[-1.602045444, 0.05, -0.783080113, 0.089307184,
+    0.859724869, -0.036133756]" \
+    home_joint_tolerance:=0.015 \
+    moveit_velocity_scaling_factor:=0.07 \
+    moveit_acceleration_scaling_factor:=0.07 \
+    prepress_standoff:=0.012 \
+    contact_step_m:=0.0005 \
+    contact_search_limit_m:=0.012 \
+    contact_detection_start_m:=0.001 \
+    post_contact_travel_m:=0.001 \
+    contact_current_delta_a:=0.25 \
+    hard_current_delta_a:=0.80 \
+    guarded_feedback_tolerance:=0.003 \
+    sequence_retract_feedback_tolerance:=0.005 \
+    sequence_transition_velocity_scaling_factor:=0.10 \
+    sequence_transition_acceleration_scaling_factor:=0.10 \
+    sequence_contact_velocity_scaling_factor:=0.03 \
+    sequence_contact_acceleration_scaling_factor:=0.03 \
+    2>&1 | tee ~/elevate_ws/test_logs/key16.log
+
+  confirmation_required:=false 表示当前只使用机械接触代理，不代表电梯控制器真实
+  确认。需要人工观察按钮灯或蜂鸣器。
+
+  等待相机、YOLO、MoveIt 和控制节点全部启动。
+
+  ## 4. 使能机械臂
+
+  打开第二个新终端：
+
+  cd ~/elevate_ws
+  source /opt/ros/humble/setup.bash
+  source install/setup.bash
+
+  使能：
+
+  ros2 service call /enable_srv \
+    piper_msgs/srv/Enable \
+    "{enable_request: true}"
+
+  必须看到：
+
+  enable_response: true
+
+  如果为 false，不要继续。
+
+  ## 5. 初始化机械臂
+
+  以下命令会产生真实运动：
+
+  ros2 service call /initialize_arm \
+    std_srvs/srv/Trigger \
+    "{}"
+
+  必须看到：
+
+  success: true
+
+  等待机械臂完全停止。
+
+  ## 6. 单独验证 key_1 精度
+
+  这一步只按 key_1，不会追加 OK：
+
+  ros2 action send_goal /press_button \
+    piper_msgs/action/PressButton \
+    "{target_name: 'key_1'}" --feedback
+
+  启动终端中应看到：
+
+  【粗定位水平补偿】+0.0 mm
+  【定位诊断】补偿后横向残差向量=...
+  残差模长=...
+  允许范围=[0.0000, 0.0060] m
+  EVENT button_press_proxy target=key_1
+
+  通过标准：
+
+  - 工具尖端落在 key_1 中心附近；
+  - 横向残差不超过 0.006 m；
+  - Action 返回：
+
+  success: true
+  hard_safety_stop: false
+
+  如果依然偏离，请记录偏差方向：
+
+  左/右：约多少 mm
+  上/下：约多少 mm
+
+  如果 key_1 明显没按准，不要继续执行完整 16。
+
+  ## 7. 执行完整楼层 16
+
+  单键精度确认后执行：
+
+  ros2 action send_goal /run_elevator_sequence \
+    piper_msgs/action/PressButton \
+    "{target_name: '16'}" --feedback
+
+  预期在任何运动前看到：
+
+  首键运动前快照=['key_1', 'key_6', 'key_ok']
+  panel snapshot ready
+  targets=['key_1', 'key_6', 'key_ok']
+
+  系统最多等待 12 秒。如果快照不完整，应在首键运动前中止。
+
+  快照成功后的预期顺序：
+
+  key_1 → key_6 → key_ok → home
+
+  最终结果应为：
+
+  success: true
+  hard_safety_stop: false
+
+  ## 8. 检查三秒间隔
+
+  测试完成后：
+
+  grep "EVENT button_press_proxy" \
+    ~/elevate_ws/test_logs/key16.log
+
+  应得到三条：
+
+  target=key_1 monotonic_s=...
+  target=key_6 monotonic_s=...
+  target=key_ok monotonic_s=...
+
+  自动计算相邻间隔：
+
+  grep "EVENT button_press_proxy" \
+    ~/elevate_ws/test_logs/key16.log |
+  awk '
+  {
+    for (i = 1; i <= NF; i++) {
+      if ($i ~ /^target=/) {
+        split($i, target_parts, "=")
+        target = target_parts[2]
+      }
+      if ($i ~ /^monotonic_s=/) {
+        split($i, time_parts, "=")
+        current = time_parts[2] + 0
+        if (count > 0) {
+          printf "%s -> %s: %.6f s\n",
+            previous_target, target, current - previous
+        }
+        previous = current
+        previous_target = target
+        count++
+      }
+    }
+  }'
+
+  验收标准：
+
+  key_1 -> key_6 <= 3.000000 s
+  key_6 -> key_ok <= 3.000000 s
+
+  ## 9. 立即停止条件
+
+  出现以下任意情况，不要继续发送 Action：
+
+  hard_safety_stop: true
+  collision
+  stall
+  overcurrent
+  MoveIt termination uncertain
+
+  也不要在硬安全停止后手动要求自动回位，先检查现场。
+
+  完成后需要保留：
+
+  cp ~/elevate_ws/test_logs/key16.log \
+    ~/elevate_ws/test_logs/key16-result-$(date +%Y%m%d-%H%M%S).log
+
+  最重要的结果是：单独 key_1 的实际偏差、三个快照坐标、三条 button_press_proxy
+  时间以及最终 Action Result。
+
+
+› xie@XieRobot:~/elevate_ws$
+  Result:
+      success: false
+  message: guarded prepress approach did not reach its measured target;
+  position_error=9.98 mm, angular_error=0.030947 rad
+  hard_safety_stop: false
+
+  Goal finished with status: ABORTED
+
+
+• 这次不是按钮快照或横向残差失败，而是到达 12 mm 预按位置时，实测 TCP 与目标还差
+  9.98 mm，超过当前 guarded_feedback_tolerance=3 mm，因此在接触前安全中止。机械
+  臂没有进入接触搜索。我先读取本次 B0/C0/T0、预按修正和 MoveIt 反馈，判断误差主
+  要在法向还是横向。
+
+────────────────────────────────────────────────────────────────────────────────
+
+• 日志已经给出根因：粗定位时法向误差是 -9.675 mm，随后预按误差是 9.98 mm，两者几
+  乎相同。现有代码只把这项法向跟随补偿应用于“连续序列首键”，没有应用于真正的 /
+  press_button 单键，所以单键预按必然差约 10 mm。正确修复是让所有首键都复用这项
+  有上限的补偿，而不是把 3 mm 到位容差粗暴放宽到 10 mm。我现在补上这条路径并加回
+  归测试。
+
+■ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro),
+visit https://chatgpt.com/codex/settings/usage to purchase more credits or try
+again at 8:16 PM.
+
+• You have 2 usage limit resets available. Run /usage to use one.
+
+• Model changed to gpt-5.6-sol xhigh
+
+
+› 帮我把上面内容整理成PPT汇报内容，要说明问题出在哪，和目前结果
+
+
+• 我会按汇报型 PPT 的结构整理：背景与目标、测试过程、关键日志证据、根因定位、已
+  经完成的改动、当前结果、剩余风险和下一步计划。为了让内容可直接落成演示稿，我会
+  使用演示文稿制作规范来组织每页标题、要点和建议图表。
+
+• Explored
+  └ Read SKILL.md
+
+• Context compacted
+
+• Calling
+  └ codex_apps.canva.list-brand-kits({"limit":20,"user_intent":"为Piper机械臂电
+        梯按键真机测试问题分析制作技术汇报PPT"})
+
+• Opened
+https://chatgpt.com/apps/canva/connector_68df33b1a2d081918778431a9cfca8ba in
+your browser.
+
+• Called
+  └ codex_apps.canva.list-brand-kits({"limit":20,"user_intent":"为Piper机械臂电
+        梯按键真机测试问题分析制作技术汇报PPT"})
+    This app connection requires reauthentication before other actions on this
+        app can succeed.
+
+────────────────────────────────────────────────────────────────────────────────
+
+• 我正在核对是否有可用的品牌模板，并把“已修复、已验证、仍待验证”三类状态分开，避
+  免汇报中把本地改动写成已经真机解决。
+
+• Ran git status --short --branch && git log -5 --oneline --decorate && git diff
+  │ --stat && git diff -- piper_pbvs_control/test/test_control_math.py | sed
+  │ -n '1,160p'
+  └ ## perf/timed-button-sequence...yolo-elevator/perf/timed-button-sequence
+     M CHANGELOG.md
+    … +162 lines (ctrl + t to view transcript)
+         """A systematic endpoint error is canceled in the next target."""
+         result = residual_compensated_position(
+
+• Explored
+  └ Read report.md
+    Read STATUS.md
+    Search guarded prepress|粗定位验收|单键|轴向|axial in key16.log
+    Read key16.log
+    Search B0|C0|T0|预接近|guarded|阶段|Action|接触|Result|目标|补偿|法向|横向|
+    按键
+           路径
+
+• Ran git diff -- piper_pbvs_control/piper_pbvs_control/control_math.py
+  │ piper_pbvs_control/piper_pbvs_control/pbvs_controller.py
+  │ piper_pbvs_control/config/pbvs_control.yaml piper_pbvs_control/launch/
+  │ … +2 lines
+  └ diff --git a/piper_launch/launch/all.launch.py b/piper_launch/launch/
+    all.launch.py
+    … +296 lines (ctrl + t to view transcript)
+                     + f'{self.coarse_lateral_error_min:.4f}, '
+                     + f'{self.coarse_lateral_error_max:.4f}] m'
+
+────────────────────────────────────────────────────────────────────────────────
+
+• 我已按“问题—证据—根因—整改—现状—下一步”的汇报逻辑整理成 10 页。以下内容可以直
+  接复制到 PPT。
+
+  ## 第1页｜标题
+
+  Piper 机械臂电梯按键任务
+  真机问题分析与阶段性进展
+
+  副标题：
+
+  - 目标任务：按下 1 → 6 → OK → Home
+  - 测试平台：ROS 2 Humble + Piper + YOLO 3D 定位
+  - 汇报日期：2026-09-21
+
+  ———
+
+  ## 第2页｜任务目标与验收标准
+
+  任务目标
+
+  - 识别电梯面板上的 key_1、key_6、key_ok
+  - 按顺序完成 1 → 6 → OK
+  - 最后机械臂返回 Home
+  - 首次按压前完成目标观测，避免按键过程中重新等待视觉识别
+
+  验收标准
+
+  - 落点位于按钮有效区域
+  - 相邻按键完成事件间隔不超过 3.000 秒
+  - 定位或运动异常时禁止继续按压
+  - 失败后安全回撤
+  - 机械接触与电梯真实确认必须区分
+
+  ———
+
+  ## 第3页｜已完成的真机测试
+
+   测试                    结果
+  ━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   初始化机械臂            首次因驱动命令门未开启失败；调用 /enable_srv 后恢复
+  ──────────────────────  ──────────────────────────────────────────────────────
+   楼层 12                 首键产生机械接触，但落点偏差明显；因没有独立确认信号
+                           而中止
+  ──────────────────────  ──────────────────────────────────────────────────────
+   楼层 16                 首键运动前快照超时，没有开始运动
+  ──────────────────────  ──────────────────────────────────────────────────────
+   “单独按 1”第一次测试    实际调用的是序列接口，因此系统同时要求 key_ok
+  ──────────────────────  ──────────────────────────────────────────────────────
+   真正的单键 1 测试       粗定位通过，但预接近阶段偏差 9.98 mm，安全中止
+
+  阶段结论
+
+  目前还没有完成一次完整的 1 → 6 → OK 真机成功序列，也没有验证按键间隔小于 3
+  秒。
+
+  ———
+
+  ## 第4页｜问题一：楼层 16 快照超时
+
+  现场错误
+
+  complete panel snapshot acquisition timed out:
+  panel snapshot is incomplete;
+  missing=['key_1'], generation=8
+
+  日志证据
+
+  - 快照要求：key_1、key_6、key_ok
+  - 5 秒内已经获得 key_6 和 key_ok
+  - key_1 在任务中止约 4.09 秒后才缓存成功
+  - 从开始等待到 key_1 满足三帧缓存条件，实际约 9.15 秒
+
+  根因判断
+
+  这不是模型没有 key_1 类别，而是：
+
+  - 原快照超时时间只有 5 秒
+  - 有效深度和检测结果存在间歇性缺失
+  - key_1 没有在截止前满足三帧稳定缓存条件
+
+  已完成整改
+
+  - target_acquire_timeout：5 秒提高到 12 秒
+  - 参数已暴露到两个启动文件
+  - 不降低稳定样本数，避免用精度换速度
+
+  建议图表：画一条时间轴，标出“5 秒超时”和“9.15 秒实际完成”。
+
+  ———
+
+  ## 第5页｜问题二：按键落点系统性偏左
+
+  真机观测
+
+  三次首键定位相对未补偿视觉目标的水平位移：
+
+  - +18.20 mm
+  - +16.80 mm
+  - +16.54 mm
+
+  正值代表面向面板时向左。
+
+  原参数存在的问题
+
+  coarse_horizontal_offset = +14 mm
+  coarse_lateral_error_range = [9 mm, 19 mm]
+
+  系统主动把目标向左移动 14 mm，同时又把 9～19 mm 的横向距离判定为合格。
+
+  根因
+
+  原来的验收指标混合了：
+
+  - 人为设置的标定偏移
+  - MoveIt 实际执行误差
+  - TCP 相对视觉中心的偏差
+
+  因此，明显偏离按钮中心约 17 mm 的位置，仍会被程序判定为“定位合格”。
+
+  结论
+
+  用户看到的“按 12 和单键 1 都不准”与日志一致，主要问题不是随机抖动，而是原补偿
+  和验收逻辑造成的系统性偏移。
+
+  ———
+
+  ## 第6页｜问题三：单键接口和 OK 键理解不一致
+
+  问题现象
+
+  测试“单独按键 1”时，程序仍要求识别并按下 key_ok。
+
+  原因
+
+  当时调用的是：
+
+  /run_elevator_sequence
+
+  该接口的设计语义是：
+
+  楼层数字键 → OK → Home
+
+  所以输入楼层 1 时，目标自然是：
+
+  key_1 → key_ok
+
+  真正只按一次 key_1 的接口是：
+
+  /press_button
+
+  另一个独立问题
+
+  当前配置为：
+
+  confirmation_required=true
+
+  但现场没有 /elevator/button_confirmed 的真实确认信号，所以即使机械臂产生接触代
+  理，也会在等待确认后中止。
+
+  机械接触调试时可以显式关闭确认要求，但不能把这种结果表述为“电梯已经真实接收按
+  键”。
+
+  ———
+
+  ## 第7页｜已经实施的定位改进
+
+  横向定位整改
+
+  - 默认水平补偿从 +14 mm 改为 0 mm
+  - 横向验收范围从 [9,19] mm 改为残差 [0,6] mm
+  - 验收对象改为“相对补偿后目标的剩余误差”
+  - 保留工具 Roll 时，水平和竖直补偿仍采用视觉面板坐标轴
+
+  视觉等待整改
+
+  - 快照超时从 5 秒提高到 12 秒
+  - 启动参数可以直接配置
+  - 保持三帧稳定缓存条件
+
+  测试结果
+
+  - 横向验收、快照参数等修改的离线测试已通过
+  - piper_pbvs_control：93 项通过
+  - piper_launch：5 项通过、1 项跳过
+  - 两个相关 ROS 包构建通过
+
+  ———
+
+  ## 第8页｜最新单键 1 测试结果
+
+  测试接口
+
+  本次确认使用了真正的单键接口 /press_button，没有追加 OK。
+
+  粗定位结果
+
+  第一次粗定位：
+
+  - 横向残差：7.099 mm
+  - 超过 6 mm 阈值
+  - 系统正确拒绝并重试
+
+  第二次粗定位：
+
+  - 横向残差：4.080 mm
+  - 进入 0～6 mm 允许范围
+  - 相比之前 16～18 mm 的系统性偏移已有明显改善
+
+  随后失败
+
+  guarded prepress approach did not reach its measured target
+  position_error = 9.98 mm
+  angular_error = 0.030947 rad
+
+  - 失败发生在预接近阶段
+  - 尚未进入接触搜索
+  - 没有实际按到按钮
+  - 安全回撤成功
+  - hard_safety_stop=false
+
+  ———
+
+  ## 第9页｜最新失败的根因定位
+
+  关键测量
+
+  粗定位完成后：
+
+  - 目标法向距离：80 mm
+  - 实测法向距离：70.325 mm
+  - 法向误差：-9.675 mm
+
+  预接近最终位置误差：
+
+  - 9.98 mm
+
+  两个数值非常接近。
+
+  根因
+
+  MoveIt 粗定位实际少走了约 9.7 mm。连续序列首键原本会记录并补偿这部分法向误差，
+  但真正的单键 /press_button 没有启用同样的补偿。
+
+  因此：
+
+  粗定位法向少走约 9.7 mm
+              ↓
+  预接近目标仍基于理想粗定位位置计算
+              ↓
+  最终出现约 9.98 mm 的位置误差
+              ↓
+  3 mm 安全验收拒绝继续运动
+
+  处理原则
+
+  不能简单把 3 mm 安全阈值放宽到 10 mm。正确方向是把实测法向误差补偿到后续目标
+  中。
+
+  当前整改状态
+
+  - 单键和连续序列首键共用法向补偿的代码已在本地加入
+  - 补偿上限仍受法向容差限制
+  - 最新补丁尚待完整回归测试、真机验证和推送
+
+  ———
+
+  ## 第10页｜目前结果与下一步
+
+  ### 已经确认有效
+
+  - 楼层 16 失败不是缺少 key_1 类别，而是 5 秒快照时间不足
+  - 原有 +14 mm 水平补偿和 [9,19] mm 验收区间是落点偏移的重要原因
+  - 新横向验收能拒绝超过 6 mm 的定位结果
+  - 真正的单键接口已经厘清
+  - 异常情况下机械臂能够停止按压并安全回撤
+
+  ### 尚未完成
+
+  - 最新轴向补偿代码尚未完成回归和真机验证
+  - 尚未成功完成真正的单键 1 按压
+  - 尚未完成 1 → 6 → OK 全序列
+  - 尚未验证相邻按键间隔小于 3 秒
+  - 尚无电梯灯光、蜂鸣器或控制器回执作为真实确认
+
+  ### 下一步测试顺序
+
+  1. 完成轴向补偿单元测试和 ROS 包构建。
+  2. 重复执行 3～5 次真正的单键 1 测试。
+  3. 记录每次横向残差、法向误差、预接近误差和实际落点。
+  4. 无运动验证 1、6、OK 能否在 12 秒内形成完整快照。
+  5. 单键稳定后再执行完整楼层 16 序列。
+  6. 记录三个机械接触事件时间，验证相邻间隔是否小于 3 秒。
+  7. 如果切换时间仍超限，再实现首键前的 80 mm 安全预演路径。
+
+  ———
+
+  ## 汇报结论页可用的一句话
+
+  > 当前问题已经从“按键不准、偶发超时”的现象，定位到快照等待不足、错误的横向验收
+  > 语义以及单键法向补偿缺失三个具体原因。系统的错误检测和安全回撤已经生效，但完
+  > 整按键任务和三秒时序仍未通过真机验收。
+
+  相关证据可以放在 PPT 附录：
+
+  - elevate_ws/src/docs/experiments/20260918-key16-snapshot-and-accuracy/
+    report.md
+
+  - elevate_ws/src/docs/agent/STATUS.md
+  - elevate_ws/src/docs/design/20260918-sequence-preflight.md
+  - elevate_ws/test_logs/key16.log
+
+  远程分支目前停在 de1cddb，其中已经包含早期真机证据和 ROS 位姿数据；横向整改、
+  12 秒超时以及最新轴向补偿仍在本地工作区，不能在汇报中写成“已经全部完成并推
+  送”。
+
+  我按 Canva 演示文稿规范组织了以上内容，但当前 Canva 连接需要重新认证，因此没有
+  直接生成在线设计稿。
+
+─ Worked for 5m 42s ────────────────────────────────────────────────────────────
+
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol xhigh · ~

@@ -1,0 +1,78 @@
+piper_pbvs_controller:
+  ros__parameters:
+    # Safety interlock for physical MoveIt execution.
+    enable_motion: false
+    close_panel_sequence: false
+    preplan_sequence: true
+    preplan_retry_attempts: 2
+    sequence_retract_distance_mm: 20.0
+
+    base_frame: base_link
+    tcp_frame: tcp_link
+    flange_frame: link6
+    camera_link_frame: camera_link
+    move_group_name: arm
+    # Keep the task-start TCP roll and only align tool +Z to the press axis.
+    # Set world_up to restore the detector's complete orientation.
+    orientation_mode: preserve_current_roll
+
+    coarse_standoff: 0.08
+    # Horizontal MoveIt target compensation in the button frame.
+    # Positive moves left when facing the panel; negative moves right.
+    coarse_horizontal_offset: 0.026
+    # Positive moves up when facing the panel; negative moves down.
+    coarse_vertical_offset: 0.007
+    # Coarse acceptance uses the button frame: panel-tangent error magnitude
+    # must remain in the inclusive 21-32 mm band.
+    coarse_lateral_error_min: 0.021
+    coarse_lateral_error_max: 0.032
+    coarse_axial_tolerance: 0.01
+    # One initial MoveIt execution; no automatic correction retries.
+    coarse_correction_attempts: 0
+    # Optional post-coarse displacement along the selected axis, in mm.
+    distance_mm: 65.0
+    # Follow the detected panel normal toward the button at the side.
+    x_advance_axis_mode: panel_normal
+
+    stable_sample_count: 3
+    stable_position_spread: 0.003
+    stable_angle_spread: 0.052359878
+    target_acquire_timeout: 5.0
+    target_pause_age: 0.5
+    tcp_feedback_timeout: 0.5
+    moveit_timeout: 20.0
+    # Explicitly included in every coarse and panel-normal MoveIt request.
+    moveit_velocity_scaling_factor: 0.07
+    moveit_acceleration_scaling_factor: 0.07
+    transition_velocity_scaling_factor: 0.2
+    transition_acceleration_scaling_factor: 0.2
+    press_velocity_scaling_factor: 0.17
+    press_acceleration_scaling_factor: 0.17
+    retract_velocity_scaling_factor: 0.07
+    retract_acceleration_scaling_factor: 0.07
+
+    moveit_position_tolerance: 0.002
+    moveit_orientation_tolerance: 0.05
+    panel_width: 0.6
+    panel_height: 1.2
+    panel_thickness: 0.02
+    camera_collision_enabled: true
+    camera_size_x: 0.10
+    camera_size_y: 0.04
+    camera_size_z: 0.04
+
+elevator_sequence:
+  ros__parameters:
+    # No motion occurs until /run_elevator_sequence receives an Action goal.
+    floor_number: 1
+    home_joint_positions: [-1.557051440, 0.234953236, -0.324353736,
+      0.013745872, 0.203885472, -0.018106872]
+    home_joint_tolerance: 0.012
+    # Only affects RETURN_AFTER_NUMBER/RETURN_AFTER_OK MoveIt trajectories.
+    home_velocity_scaling_factor: 0.01
+    home_acceleration_scaling_factor: 0.01
+    home_timeout: 20.0
+    press_timeout: 120.0
+    joint_feedback_timeout: 0.5
+    move_group_name: arm
+    enable_motion: false

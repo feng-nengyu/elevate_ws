@@ -1,0 +1,13 @@
+handeye_static_tf:
+  ros__parameters:
+    # easy_handeye2 was calibrated with tracking_base_frame=camera_link:
+    # p_link6 = T_link6_camera_link * p_camera_link
+    parent_frame: link6
+    camera_link_frame: camera_link
+    calibrated_frame: camera_link
+    lookup_retry_period: 0.5
+    handeye_matrix:
+      [-0.003, 0.012, -1.000, -0.068,
+       -0.002, 1.000, 0.012, 0.024,
+       1.000, 0.002, -0.003, 0.052,
+       0.000, 0.000, 0.000, 1.000]

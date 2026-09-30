@@ -1,0 +1,42 @@
+# Python generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments, editors, and credentials
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+.idea/
+.vscode/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# ROS 2 generated files and recordings
+build/
+install/
+log/
+*.bag
+*.db3
+*.mcap
+
+# Models and other large generated artifacts
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# Runtime captures/maps and local diagnostic samples
+images/
+map/
+piper_vision/piper_vision/test*.jpg
+piper_vision/test.txt
+
+# Machine-specific configuration overrides
+*.local.yaml

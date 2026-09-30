@@ -1,0 +1,17 @@
+# Unique button class, or floor digits for the sequence action.
+string target_name
+# Internal sequence fields. Standalone callers leave them false/empty.
+bool close_panel_sequence
+bool sequence_continuation
+string[] snapshot_targets
+---
+bool success
+string message
+bool hard_safety_stop
+---
+string state
+float32 position_error_m
+float32 angular_error_rad
+float32 target_age_s
+# Motion-completion proxy, not a physical button trigger signal.
+float64 press_event_monotonic_s

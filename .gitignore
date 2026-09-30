@@ -1,0 +1,40 @@
+# ROS build outputs and runtime logs
+/build/
+/build_wzl/
+/install/
+/install_wzl/
+/log/
+/log_wzl/
+/Log/
+/.ros-log/
+/.rosdep/
+/.rosdep-cache/
+/button_click_logs/
+/button_test_logs/
+/floor_interval_logs/
+/test_logs/
+/log.txt
+/symlink_install_manifest.txt
+
+# Python and editor caches
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+*.py[cod]
+.vscode/
+.idea/
+.venv/
+venv/
+
+# Local credentials and recordings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.bag
+*.db3
+*.mcap
