@@ -59,14 +59,14 @@ def generate_launch_description():
         DeclareLaunchArgument('press_timeout', default_value='120.0'),
         DeclareLaunchArgument(
             'moveit_velocity_scaling_factor',
-            default_value='0.07',
+            default_value='0.09',
             description=(
                 'MoveIt velocity scaling for coarse and panel-normal moves'
             ),
         ),
         DeclareLaunchArgument(
             'moveit_acceleration_scaling_factor',
-            default_value='0.07',
+            default_value='0.09',
             description=(
                 'MoveIt acceleration scaling for coarse and panel-normal moves'
             ),
@@ -81,15 +81,16 @@ def generate_launch_description():
         DeclareLaunchArgument('close_panel_sequence', default_value='false'),
         DeclareLaunchArgument('preplan_sequence', default_value='true'),
         DeclareLaunchArgument('preplan_retry_attempts', default_value='2'),
+        DeclareLaunchArgument('transition_plan_candidates', default_value='3'),
         DeclareLaunchArgument('preplan_retry_timeout_sec', default_value='60.0'),
         DeclareLaunchArgument('sequence_snapshot_acquire_timeout', default_value='15.0'),
-        DeclareLaunchArgument('sequence_retract_distance_mm', default_value='20.0'),
-        DeclareLaunchArgument('transition_velocity_scaling_factor', default_value='0.2'),
-        DeclareLaunchArgument('transition_acceleration_scaling_factor', default_value='0.2'),
+        DeclareLaunchArgument('sequence_retract_distance_mm', default_value='15.0'),
+        DeclareLaunchArgument('transition_velocity_scaling_factor', default_value='0.35'),
+        DeclareLaunchArgument('transition_acceleration_scaling_factor', default_value='0.35'),
         DeclareLaunchArgument('press_velocity_scaling_factor', default_value='0.17'),
         DeclareLaunchArgument('press_acceleration_scaling_factor', default_value='0.17'),
-        DeclareLaunchArgument('retract_velocity_scaling_factor', default_value='0.07'),
-        DeclareLaunchArgument('retract_acceleration_scaling_factor', default_value='0.07'),
+        DeclareLaunchArgument('retract_velocity_scaling_factor', default_value='0.2'),
+        DeclareLaunchArgument('retract_acceleration_scaling_factor', default_value='0.2'),
         DeclareLaunchArgument('coarse_standoff', default_value='0.08'),
         DeclareLaunchArgument(
             'coarse_horizontal_offset',
@@ -125,7 +126,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'distance_mm',
-            default_value='65.0',
+            default_value='67.0',
             description=(
                 'Optional post-coarse advance displacement in mm'
             ),
@@ -245,6 +246,7 @@ def generate_launch_description():
                     'retract_acceleration_scaling_factor': ParameterValue(LaunchConfiguration('retract_acceleration_scaling_factor'), value_type=float),
                     'preplan_sequence': ParameterValue(LaunchConfiguration('preplan_sequence'), value_type=bool),
                     'preplan_retry_attempts': ParameterValue(LaunchConfiguration('preplan_retry_attempts'), value_type=int),
+                    'transition_plan_candidates': ParameterValue(LaunchConfiguration('transition_plan_candidates'), value_type=int),
                     'preplan_retry_timeout_sec': ParameterValue(LaunchConfiguration('preplan_retry_timeout_sec'), value_type=float),
                     'sequence_snapshot_acquire_timeout': ParameterValue(LaunchConfiguration('sequence_snapshot_acquire_timeout'), value_type=float),
                     'sequence_retract_distance_mm': ParameterValue(LaunchConfiguration('sequence_retract_distance_mm'), value_type=float),

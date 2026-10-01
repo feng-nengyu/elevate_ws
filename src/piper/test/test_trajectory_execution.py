@@ -227,3 +227,19 @@ def test_startup_state_allows_only_small_joint2_joint3_boundary_error():
         [-2.7, 0.0, 0.0, 0.0, 0.0, 0.0],
         0.08,
     )
+
+
+def test_smooth_interpolation_is_continuous_and_bounded():
+    from piper.trajectory_execution import NormalizedTrajectory,prepare_smooth_trajectory,sample_smooth_trajectory
+    t=NormalizedTrajectory(('joint1',),(0.,.1,.2),((0.,),(.02,),(.01,)),((0.,),(2.,),(0.,)))
+    t=prepare_smooth_trajectory(t,(0.,))
+    for i in range(200):
+        stamp=i/1000
+        p,v=sample_smooth_trajectory(t,(0.,),stamp)
+        low,high=(0.,.02) if stamp<.1 else (.01,.02)
+        assert low-1e-12<=p[0]<=high+1e-12
+    left=sample_smooth_trajectory(t,(0.,),.1-1e-8)[1][0]
+    right=sample_smooth_trajectory(t,(0.,),.1+1e-8)[1][0]
+    assert left==pytest.approx(right,abs=1e-6)
+    assert sample_smooth_trajectory(t,(0.,),0)[1]==(0.,)
+    assert sample_smooth_trajectory(t,(0.,),.2)[1]==(0.,)

@@ -32,7 +32,8 @@ from piper.trajectory_execution import (
     duration_seconds,
     normalize_trajectory,
     position_tolerances,
-    sample_linear_trajectory,
+    prepare_smooth_trajectory,
+    sample_smooth_trajectory,
     startup_state_error,
     updated_settle_count,
     violating_joint,
@@ -52,7 +53,7 @@ class PiperTrajectoryController(Node):
         self.declare_parameter('can_feedback_timeout', 0.5)
         self.declare_parameter('arm_path_tolerance', 0.5)
         self.declare_parameter('arm_goal_tolerance', 0.01)
-        self.declare_parameter('arm_goal_settle_cycles', 5)
+        self.declare_parameter('arm_goal_settle_cycles', 1)
         self.declare_parameter('arm_start_tolerance', 0.2)
         self.declare_parameter('gripper_path_tolerance', 0.015)
         self.declare_parameter('gripper_goal_tolerance', 0.003)
@@ -191,7 +192,7 @@ class PiperTrajectoryController(Node):
         self.command_pub = self.create_publisher(
             JointState,
             '/joint_ctrl_single',
-            10,
+            1,
         )
         self.create_subscription(
             JointState,
@@ -982,7 +983,9 @@ class PiperTrajectoryController(Node):
 
             period = 1.0 / self.command_rate
             started_at = time.monotonic()
+            trajectory = prepare_smooth_trajectory(trajectory, start_positions)
             final_time = trajectory.times[-1]
+            next_tick = started_at
 
             while True:
                 elapsed = time.monotonic() - started_at
@@ -1005,7 +1008,7 @@ class PiperTrajectoryController(Node):
                         reason,
                     )
 
-                desired, desired_velocities = sample_linear_trajectory(
+                desired, desired_velocities = sample_smooth_trajectory(
                     trajectory,
                     start_positions,
                     elapsed,
@@ -1030,7 +1033,11 @@ class PiperTrajectoryController(Node):
                         FollowJointTrajectory.Result.PATH_TOLERANCE_VIOLATED,
                         f'{violation} exceeded path tolerance',
                     )
-                time.sleep(period)
+                next_tick += period
+                now = time.monotonic()
+                if next_tick <= now:
+                    next_tick = started_at + (math.floor((now-started_at)/period)+1)*period
+                time.sleep(max(0.0,min(next_tick,started_at+final_time)-now))
 
             final_positions = trajectory.positions[-1]
             requested_goal_time = duration_seconds(

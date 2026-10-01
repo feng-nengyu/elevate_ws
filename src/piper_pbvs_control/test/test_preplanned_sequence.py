@@ -100,7 +100,18 @@ def test_repeated_digits_are_planned_in_order_before_any_execution():
     n._final_moveit_arm_target=Mock(return_value=[0.0]*6)
     n._preplan_snapshot(['key_1','key_1','key_ok'],None)
     assert [name for name,_ in n.preplanned_buttons]==['key_1','key_1','key_ok']
-    assert n._wait_planned_action.call_count==9
+    assert n._wait_planned_action.call_count==8
+    for index, call in enumerate(n._wait_planned_action.call_args_list):
+        request=call.args[1].request
+        assert request.pipeline_id == ''
+        assert request.planner_id == ''
+
+    for call in n._wait_planned_action.call_args_list:
+        for constraint in call.args[1].request.path_constraints.position_constraints:
+            dimensions=constraint.constraint_region.primitives[0].dimensions
+            assert list(dimensions[:2]) == pytest.approx([.016,.016])
+            assert dimensions[2] <= .073 + 1e-9
+
     n.execute_trajectory_client.send_goal_async.assert_not_called()
 
 
@@ -246,3 +257,25 @@ def test_time_budget_stops_after_sixty_seconds(monkeypatch):
             MoveGroup.Goal(), None, 'key_1', 'panel-normal movement'
         )
     assert attempts[0] == 6
+
+
+def test_shortest_transition_chooses_fastest_valid_plan():
+    from types import SimpleNamespace
+    from moveit_msgs.msg import RobotTrajectory
+    from trajectory_msgs.msg import JointTrajectoryPoint
+    def plan(seconds):
+        t=RobotTrajectory();p=JointTrajectoryPoint();p.time_from_start.sec=seconds
+        t.joint_trajectory.points=[p]
+        return SimpleNamespace(planned_trajectory=t)
+    n=object.__new__(PiperPbvsController);n.transition_plan_candidates=3
+    n._guard=Mock();n.move_group_client=Mock();n.moveit_timeout=20
+    n._plan_segment_with_retry=Mock(return_value=plan(4))
+    short=plan(2)
+    n._wait_planned_action=Mock(side_effect=[short,plan(3)])
+    assert n._plan_shortest_transition(MoveGroup.Goal(),None,'key_3') is short
+
+
+def test_normal_limit_accepts_4_42_degrees_within_five_degrees():
+    import math
+    assert math.radians(4.42)<PiperPbvsController.SNAPSHOT_NORMAL_ANGLE_LIMIT
+    assert math.radians(5.1)>PiperPbvsController.SNAPSHOT_NORMAL_ANGLE_LIMIT

@@ -77,6 +77,7 @@ class NormalizedTrajectory:
     joint_names: tuple
     times: tuple
     positions: tuple
+    velocities: tuple = ()
 
 
 def duration_seconds(duration):
@@ -100,6 +101,7 @@ def normalize_trajectory(trajectory, expected_joints):
     source_indices = tuple(supplied.index(name) for name in expected)
     times = []
     positions = []
+    velocities = []
     previous_time = -math.inf
 
     for point_index, point in enumerate(trajectory.points):
@@ -142,12 +144,17 @@ def normalize_trajectory(trajectory, expected_joints):
 
         times.append(point_time)
         positions.append(reordered)
+        velocity = tuple(float(point.velocities[index]) for index in source_indices) if point.velocities else ()
+        if not all(math.isfinite(value) for value in velocity):
+            raise TrajectoryValidationError('trajectory contains non-finite velocity')
+        velocities.append(velocity)
         previous_time = point_time
 
     return NormalizedTrajectory(
         joint_names=expected,
         times=tuple(times),
         positions=tuple(positions),
+        velocities=tuple(velocities) if all(velocities) else (),
     )
 
 
@@ -192,6 +199,50 @@ def sample_linear_trajectory(trajectory, start_positions, elapsed):
     )
     return sampled, velocities
 
+
+
+def prepare_smooth_trajectory(trajectory, start_positions):
+    """Bound shared cubic tangents to local secants; no point overshoot."""
+    times = list(trajectory.times)
+    positions = list(trajectory.positions)
+    velocities = list(trajectory.velocities)
+    if times[0] > 0:
+        times.insert(0, 0.0)
+        positions.insert(0, tuple(start_positions))
+        if velocities:
+            velocities.insert(0, (0.0,) * len(start_positions))
+    slopes = [tuple((b-a)/(times[i+1]-times[i]) for a,b in zip(positions[i],positions[i+1])) for i in range(len(times)-1)]
+    tangents=[]
+    for i in range(len(times)):
+        values=[]
+        for j in range(len(trajectory.joint_names)):
+            if i == 0 or i == len(times)-1:
+                value=0.0
+            else:
+                left,right=slopes[i-1][j],slopes[i][j]
+                requested=velocities[i][j] if velocities else (left+right)/2
+                if left*right <= 0 or requested*left <= 0:
+                    value=0.0
+                else:
+                    value=math.copysign(min(abs(requested),abs(left),abs(right)),left)
+            values.append(value)
+        tangents.append(tuple(values))
+    return NormalizedTrajectory(trajectory.joint_names,tuple(times),tuple(positions),tuple(tangents))
+
+
+def sample_smooth_trajectory(trajectory, start_positions, elapsed):
+    """C1 cubic interpolation with tangents bounded during preparation."""
+    t=max(0.0,float(elapsed))
+    if t >= trajectory.times[-1]:
+        return trajectory.positions[-1],(0.0,)*len(trajectory.joint_names)
+    i=max(0,bisect_right(trajectory.times,t)-1)
+    h=trajectory.times[i+1]-trajectory.times[i]
+    u=(t-trajectory.times[i])/h
+    p0,p1=trajectory.positions[i:i+2]
+    v0,v1=trajectory.velocities[i:i+2]
+    pos=tuple((2*u**3-3*u**2+1)*a+(u**3-2*u**2+u)*h*va+(-2*u**3+3*u**2)*b+(u**3-u**2)*h*vb for a,b,va,vb in zip(p0,p1,v0,v1))
+    vel=tuple((6*u*u-6*u)*a/h+(3*u*u-4*u+1)*va+(-6*u*u+6*u)*b/h+(3*u*u-2*u)*vb for a,b,va,vb in zip(p0,p1,v0,v1))
+    return pos,vel
 
 def position_tolerances(requested, joint_names, default_tolerance):
     """Return safe positive per-joint tolerances."""

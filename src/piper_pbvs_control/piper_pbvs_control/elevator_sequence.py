@@ -420,7 +420,7 @@ class ElevatorSequence(Node):
                 child_goal.cancel_goal_async()
                 raise SequenceFailure(f'pressing {target_name} timed out')
             self._feedback(parent_goal)
-            result_ready.wait(0.05)
+            result_ready.wait(0.01)
         self.active_press_goal = None
         wrapped_result = result_future.result()
         if (
@@ -507,7 +507,7 @@ class ElevatorSequence(Node):
                 move_goal.cancel_goal_async()
                 raise SequenceFailure('MoveIt home return timed out')
             self._feedback(parent_goal)
-            result_ready.wait(0.05)
+            result_ready.wait(0.01)
         self.active_move_goal = None
         wrapped_result = result_future.result()
         if (

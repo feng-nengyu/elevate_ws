@@ -101,7 +101,7 @@ class Tester(Node):
         pbvs = self.params('/piper_pbvs_controller', ['distance_mm','enable_motion','coarse_correction_attempts','coarse_horizontal_offset','coarse_vertical_offset','coarse_lateral_error_min','coarse_lateral_error_max'])
         home = self.params('/elevator_sequence', ['enable_motion','home_joint_positions','home_joint_tolerance','home_velocity_scaling_factor','home_acceleration_scaling_factor','move_group_name'])
         if self.click:
-            expected = dict(distance_mm=65.0, coarse_horizontal_offset=0.026,
+            expected = dict(distance_mm=67.0, coarse_horizontal_offset=0.026,
                             coarse_vertical_offset=0.007, coarse_lateral_error_min=0.021,
                             coarse_lateral_error_max=0.032)
             for name, value in expected.items():
@@ -183,9 +183,9 @@ class Tester(Node):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='逐键测试与监测；默认只允许零按压距离，--click 使用已确认的65毫米行程')
+    parser = argparse.ArgumentParser(description='逐键测试与监测；默认只允许零按压距离，--click 使用主手册配置的67毫米行程')
     parser.add_argument('targets', nargs='*', default=DEFAULT)
-    parser.add_argument('--click', action='store_true', help='实际点击模式；强制核对65mm和26/7mm补偿')
+    parser.add_argument('--click', action='store_true', help='实际点击模式；强制核对67mm和26/7mm补偿')
     parser.add_argument('--pause', type=float, default=None, help='到位后观察秒数，粗定位默认5，点击默认1')
     args = parser.parse_args()
     if args.pause is None:
@@ -202,7 +202,7 @@ def main():
             node = Tester(stream, click=args.click)
             node.record('test_mode', actual_click=args.click, targets=args.targets)
             if args.click:
-                print('实际点击模式：每键推进65mm，成功后回Ready；任何失败立即停止。', flush=True)
+                print('实际点击模式：每键推进67mm，成功后回Ready；任何失败立即停止。', flush=True)
             print(f'日志：{out}', flush=True)
             home = node.check()
             node.verify_home(home)

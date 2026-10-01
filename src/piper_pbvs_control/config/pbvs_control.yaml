@@ -5,8 +5,9 @@ piper_pbvs_controller:
     close_panel_sequence: false
     preplan_sequence: true
     preplan_retry_attempts: 2
+    transition_plan_candidates: 3
     preplan_retry_timeout_sec: 60.0
-    sequence_retract_distance_mm: 20.0
+    sequence_retract_distance_mm: 15.0
 
     base_frame: base_link
     tcp_frame: tcp_link
@@ -31,7 +32,7 @@ piper_pbvs_controller:
     # One initial MoveIt execution; no automatic correction retries.
     coarse_correction_attempts: 0
     # Optional post-coarse displacement along the selected axis, in mm.
-    distance_mm: 65.0
+    distance_mm: 67.0
     # Follow the detected panel normal toward the button at the side.
     x_advance_axis_mode: panel_normal
 
@@ -44,14 +45,14 @@ piper_pbvs_controller:
     tcp_feedback_timeout: 0.5
     moveit_timeout: 20.0
     # Explicitly included in every coarse and panel-normal MoveIt request.
-    moveit_velocity_scaling_factor: 0.07
-    moveit_acceleration_scaling_factor: 0.07
-    transition_velocity_scaling_factor: 0.2
-    transition_acceleration_scaling_factor: 0.2
+    moveit_velocity_scaling_factor: 0.09
+    moveit_acceleration_scaling_factor: 0.09
+    transition_velocity_scaling_factor: 0.35
+    transition_acceleration_scaling_factor: 0.35
     press_velocity_scaling_factor: 0.17
     press_acceleration_scaling_factor: 0.17
-    retract_velocity_scaling_factor: 0.07
-    retract_acceleration_scaling_factor: 0.07
+    retract_velocity_scaling_factor: 0.2
+    retract_acceleration_scaling_factor: 0.2
 
     moveit_position_tolerance: 0.002
     moveit_orientation_tolerance: 0.05

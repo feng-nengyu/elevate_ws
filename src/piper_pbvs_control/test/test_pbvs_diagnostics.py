@@ -208,3 +208,8 @@ def test_x_advance_uses_measured_t0_and_only_offsets_base_x():
         [0.38, -0.10, 0.54],
     )
     assert target_pose.pose.orientation.w == 1.0
+
+
+def test_approach_limit_is_eight_mm_and_press_stays_six_mm():
+    assert PiperPbvsController.APPROACH_POSITION_TOLERANCE == 0.008
+    assert PiperPbvsController.X_POSITION_TOLERANCE == 0.006

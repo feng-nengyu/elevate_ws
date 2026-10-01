@@ -72,9 +72,11 @@ class PiperPbvsController(Node):
     """Coordinate perception and guarded MoveIt coarse positioning."""
 
     ARM_JOINT_NAMES = tuple(f'joint{index}' for index in range(1, 7))
-    APPROACH_POSITION_TOLERANCE = 0.007
+    APPROACH_POSITION_TOLERANCE = 0.008
     X_POSITION_TOLERANCE = 0.006
     X_ORIENTATION_TOLERANCE = 0.075
+    PRESS_PATH_LATERAL_HALF_WIDTH = 0.008
+    SNAPSHOT_NORMAL_ANGLE_LIMIT = math.radians(5.0)
 
     STATE_LABELS = {
         'IDLE': '空闲',
@@ -142,6 +144,9 @@ class PiperPbvsController(Node):
             callback_group=self.callback_group,
         )
         self.press_event_pub = self.create_publisher(Float64, '/pbvs/press_event', 10)
+        self.press_reached_pub = self.create_publisher(String, '/pbvs/press_reached', 50)
+        self.press_command_pub = self.create_publisher(String, '/pbvs/press_command', 50)
+        self.segment_timing_pub = self.create_publisher(String, '/pbvs/segment_timing', 50)
         self.transition_command_pub = self.create_publisher(
             String, '/pbvs/transition_command', 10
         )
@@ -208,8 +213,9 @@ class PiperPbvsController(Node):
             'close_panel_sequence': False,
             'preplan_sequence': True,
             'preplan_retry_attempts': 2,
+            'transition_plan_candidates': 3,
             'preplan_retry_timeout_sec': 60.0,
-            'sequence_retract_distance_mm': 20.0,
+            'sequence_retract_distance_mm': 15.0,
             'base_frame': 'base_link',
             'tcp_frame': 'tcp_link',
             'flange_frame': 'link6',
@@ -223,7 +229,7 @@ class PiperPbvsController(Node):
             'coarse_lateral_error_max': 0.032,
             'coarse_axial_tolerance': 0.01,
             'coarse_correction_attempts': 0,
-            'distance_mm': 65.0,
+            'distance_mm': 67.0,
             'x_advance_axis_mode': 'panel_normal',
             'stable_sample_count': 3,
             'stable_position_spread': 0.003,
@@ -233,14 +239,14 @@ class PiperPbvsController(Node):
             'target_pause_age': 0.5,
             'tcp_feedback_timeout': 0.5,
             'moveit_timeout': 20.0,
-            'moveit_velocity_scaling_factor': 0.07,
-            'moveit_acceleration_scaling_factor': 0.07,
-            'transition_velocity_scaling_factor': 0.2,
-            'transition_acceleration_scaling_factor': 0.2,
+            'moveit_velocity_scaling_factor': 0.09,
+            'moveit_acceleration_scaling_factor': 0.09,
+            'transition_velocity_scaling_factor': 0.35,
+            'transition_acceleration_scaling_factor': 0.35,
             'press_velocity_scaling_factor': 0.17,
             'press_acceleration_scaling_factor': 0.17,
-            'retract_velocity_scaling_factor': 0.07,
-            'retract_acceleration_scaling_factor': 0.07,
+            'retract_velocity_scaling_factor': 0.2,
+            'retract_acceleration_scaling_factor': 0.2,
             'moveit_position_tolerance': 0.002,
             'moveit_orientation_tolerance': 0.05,
             'panel_width': 0.6,
@@ -289,11 +295,13 @@ class PiperPbvsController(Node):
                 'x_advance_axis_mode must be base_x or panel_normal'
             )
 
-        integer_names = ('stable_sample_count',)
+        integer_names = ('stable_sample_count', 'transition_plan_candidates')
         for name in integer_names:
             value = int(values[name])
             if value < 1:
                 raise ValueError(f'{name} must be positive')
+            if name == 'transition_plan_candidates' and value > 5:
+                raise ValueError('transition_plan_candidates must be 1..5')
             setattr(self, name, value)
 
         self.coarse_correction_attempts = int(
@@ -874,7 +882,7 @@ class PiperPbvsController(Node):
                 move_goal.cancel_goal_async()
                 raise TaskFailure(f'MoveIt {stage} timed out')
             self._feedback(goal_handle)
-            result_ready.wait(0.05)
+            result_ready.wait(0.01)
         self.active_move_goal = None
         wrapped_result = result_future.result()
         if (
@@ -915,7 +923,7 @@ class PiperPbvsController(Node):
                     self._latest_tcp_arrays()
                 )
             except TaskFailure:
-                time.sleep(0.05)
+                time.sleep(0.01)
                 continue
             _, _, position_error, angular_error = pose_error(
                 target_position,
@@ -931,7 +939,7 @@ class PiperPbvsController(Node):
                 and angular_error <= self.X_ORIENTATION_TOLERANCE
             ):
                 return current_position, current_quaternion
-            time.sleep(0.05)
+            time.sleep(0.01)
         raise TaskFailure(
             f'{movement_label} did not reach its measured target; '
             f'position_error={last_position_error * 1000.0:.2f} mm, '
@@ -1271,10 +1279,18 @@ class PiperPbvsController(Node):
         return self.sequence_snapshot[name]
 
     def _wait_planned_action(self, client, goal, goal_handle, timeout,
-                             transition_target=None):
+                             transition_target=None, press_target=None):
         if not client.wait_for_server(timeout_sec=5.0):
             raise TaskFailure('preplanned motion action unavailable')
+        stamp = time.monotonic_ns()
+        wall_stamp = time.time_ns()
         submission = client.send_goal_async(goal)
+        if press_target is not None:
+            self.press_command_pub.publish(String(data=json.dumps({
+                'target': press_target, 'monotonic_ns': stamp,
+                'wall_time_ns': wall_stamp, 'stage': 'panel-normal movement',
+                'planned': True, 'reference': 'before_send_goal_async',
+            })))
         if transition_target is not None:
             # Timestamp immediately after the action client submitted the
             # trajectory, before waiting for acceptance or execution.
@@ -1316,7 +1332,7 @@ class PiperPbvsController(Node):
                     self.uncertain_motion = True
                 raise
             self._feedback(goal_handle)
-            ready.wait(0.05)
+            ready.wait(0.01)
         self.active_move_goal = None
         wrapped = result.result()
         if wrapped is None or wrapped.result is None:
@@ -1370,12 +1386,44 @@ class PiperPbvsController(Node):
                     f'已耗时{elapsed:.1f}s：{error}；从相同起点重新规划'
                 )
 
+    @staticmethod
+    def _trajectory_duration(result):
+        points = result.planned_trajectory.joint_trajectory.points
+        if not points:
+            raise TaskFailure('empty planned candidate trajectory')
+        t = points[-1].time_from_start
+        return t.sec + t.nanosec * 1e-9
+
+    def _plan_shortest_transition(self, goal, goal_handle, name):
+        best = self._plan_segment_with_retry(goal,goal_handle,name,'button transition')
+        for _ in range(getattr(self,'transition_plan_candidates',1)-1):
+            self._guard(goal_handle)
+            try:
+                candidate = self._wait_planned_action(self.move_group_client,copy.deepcopy(goal),goal_handle,self.moveit_timeout)
+            except PlanningFailure:
+                continue
+            if self._trajectory_duration(candidate) < self._trajectory_duration(best):
+                best = candidate
+        return best
+
     def _preplan_snapshot(self, names, goal_handle):
         """Plan every pose before motion, with each prior endpoint as start."""
         from piper_pbvs_control.control_math import sequence_button_positions
         self.preplanned_buttons = []
         self.preplanned_index = 0
         first_position, first_quaternion = self.sequence_snapshot[names[0]]
+        first_axis = quaternion_to_matrix(first_quaternion)[:, 2]
+        for name in names:
+            position, quaternion = self.sequence_snapshot[name]
+            axis = quaternion_to_matrix(quaternion)[:, 2]
+            angle = math.acos(float(np.clip(np.dot(axis,first_axis),-1.0,1.0)))
+            separation = abs(float(np.dot(np.asarray(position)-np.asarray(first_position),first_axis)))
+            if angle > self.SNAPSHOT_NORMAL_ANGLE_LIMIT or separation > 0.01:
+                raise TaskFailure(
+                    f'snapshot targets disagree on panel plane: {names[0]} vs {name}; '
+                    f'normal_angle={math.degrees(angle):.3f} deg (limit=5.000 deg), '
+                    f'plane_separation={separation*1000:.2f} mm (limit=10.00 mm)'
+                )
         self._apply_collision_scene(first_position, first_quaternion)
         with self.data_lock:
             initial = copy.deepcopy(self.latest_joint_positions)
@@ -1390,10 +1438,6 @@ class PiperPbvsController(Node):
             # plane normals instead of changing collision geometry mid-batch.
             axis = quaternion_to_matrix(button_quaternion)[:, 2]
             first_axis = quaternion_to_matrix(first_quaternion)[:, 2]
-            if np.dot(axis, first_axis) < math.cos(0.075) or abs(
-                np.dot(np.asarray(position) - np.asarray(first_position), first_axis)
-            ) > 0.01:
-                raise TaskFailure('snapshot targets disagree on panel plane')
             approach, press, retreat = sequence_button_positions(
                 position, control, button_quaternion,
                 self.coarse_standoff, self.distance_m,
@@ -1405,6 +1449,9 @@ class PiperPbvsController(Node):
                       'panel-normal movement', 'panel retract')
             segments = []
             for target, stage in zip((approach, press, retreat), stages):
+                if stage == 'button transition' and names[index] == names[index-1]:
+                    self.get_logger().info(f'【重复键优化】{name} 已在同键退回点，跳过零位移转移')
+                    continue
                 self._set_state('PREPLAN_SEQUENCE')
                 pose = self._pose_message(target, control)
                 goal = self._moveit_goal(pose, True)
@@ -1423,7 +1470,11 @@ class PiperPbvsController(Node):
                     corridor.weight = 1.0
                     box = SolidPrimitive()
                     box.type = SolidPrimitive.BOX
-                    box.dimensions = [0.006, 0.006, float(np.linalg.norm(target - previous)) + 0.006]
+                    box.dimensions = [
+                        2.0 * self.PRESS_PATH_LATERAL_HALF_WIDTH,
+                        2.0 * self.PRESS_PATH_LATERAL_HALF_WIDTH,
+                        float(np.linalg.norm(target - previous)) + 0.006,
+                    ]
                     corridor.constraint_region.primitives.append(box)
                     corridor.constraint_region.primitive_poses.append(
                         self._pose_message((target + previous) / 2.0, control).pose)
@@ -1435,13 +1486,17 @@ class PiperPbvsController(Node):
                     constraint.absolute_x_axis_tolerance = 0.02
                     constraint.absolute_y_axis_tolerance = 0.02
                     constraint.absolute_z_axis_tolerance = 0.02
-                result = self._plan_segment_with_retry(
-                    goal, goal_handle, name, stage
-                )
+                planning_started = time.monotonic()
+                result = (self._plan_shortest_transition(goal,goal_handle,name)
+                          if stage == 'button transition' else
+                          self._plan_segment_with_retry(goal,goal_handle,name,stage))
                 trajectory = result.planned_trajectory
                 end = self._final_moveit_arm_target(result)
                 if end is None or not trajectory.joint_trajectory.points:
                     raise TaskFailure('empty preplanned trajectory')
+                duration = trajectory.joint_trajectory.points[-1].time_from_start
+                seconds = duration.sec + duration.nanosec * 1e-9
+                self.get_logger().info(f'【段规划】{name} {stage}: 规划耗时={time.monotonic()-planning_started:.3f}s, 轨迹时长={seconds:.3f}s')
                 segments.append((trajectory, np.asarray(target), control, stage))
                 start = end
             pending.append((name, segments))
@@ -1477,6 +1532,8 @@ class PiperPbvsController(Node):
                 for joint, value in zip(self.ARM_JOINT_NAMES, actual)
             ):
                 raise TaskFailure('preplanned start no longer matches real arm')
+            segment_started = time.monotonic()
+            self.get_logger().info(f'【段执行开始】{name} {stage}')
             self._set_state('X_ADVANCE' if stage == 'panel-normal movement'
                             else 'RETRACT' if stage == 'panel retract' else 'COARSE_APPROACH')
             self.desired_tcp_pub.publish(self._pose_message(target, quaternion))
@@ -1487,8 +1544,22 @@ class PiperPbvsController(Node):
                 self.execute_trajectory_client, execute, goal_handle,
                 self.moveit_timeout,
                 transition_target=name if stage == 'button transition' else None,
+                press_target=name if stage == 'panel-normal movement' else None,
             )
             self._verify_target_pose(goal_handle, target, quaternion, stage)
+            if stage == 'panel-normal movement':
+                reached_ns = time.monotonic_ns()
+                self.press_reached_pub.publish(String(data=json.dumps({
+                    'target': name, 'monotonic_ns': reached_ns,
+                    'wall_time_ns': time.time_ns(),
+                    'stage': 'panel-normal movement', 'planned': True,
+                    'reference': 'measured_tcp_press_target_verified',
+                })))
+            elapsed = time.monotonic()-segment_started
+            self.get_logger().info(f'【段执行完成】{name} {stage}: {elapsed:.3f}s')
+            self.segment_timing_pub.publish(String(data=json.dumps({
+                'target': name, 'stage': stage, 'execution_and_verification_s': elapsed,
+            })))
             if stage in ('coarse approach', 'button transition'):
                 actual_position, actual_quaternion = self._latest_tcp_arrays()
                 button_position, _ = self.sequence_snapshot[name]

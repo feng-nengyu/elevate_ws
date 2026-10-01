@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute floor goals 1..19 and time submitted button-transition commands."""
+"""Execute floor goals 1..19 and time each forward-press submission."""
 
 import argparse
 import csv
@@ -8,7 +8,11 @@ import json
 from pathlib import Path
 import time
 
-from action_msgs.msg import GoalStatus
+from action_msgs.msg import GoalStatus, GoalStatusArray
+from moveit_msgs.action import MoveGroup
+from sensor_msgs.msg import JointState
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
+from piper_pbvs_control.elevator_sequence import make_home_moveit_goal, home_joint_errors
 from piper_msgs.action import PressButton
 import rclpy
 from rclpy.action import ActionClient
@@ -16,6 +20,7 @@ from rclpy.node import Node
 from rclpy.signals import SignalHandlerOptions
 from rcl_interfaces.srv import GetParameters
 from std_msgs.msg import String
+from std_srvs.srv import Trigger
 
 
 class FloorIntervalTest(Node):
@@ -27,10 +32,102 @@ class FloorIntervalTest(Node):
         self.active_goal = None
         self.last_command = None
         self.floor_commands = []
+        self.joints = None
+        self.joint_received = 0.0
+        self.action_status = {}
+        self.move_client = ActionClient(self, MoveGroup, '/move_action')
+        self.create_subscription(JointState, '/joint_states', self.on_joints, 10)
+        qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
+        for name in ('/press_button', '/run_elevator_sequence', '/move_action', '/execute_trajectory', '/arm_controller/follow_joint_trajectory'):
+            self.create_subscription(GoalStatusArray, name+'/_action/status', lambda msg, action=name: self.action_status.__setitem__(action,[entry.status for entry in msg.status_list]), qos)
         self.client = ActionClient(self, PressButton, '/run_elevator_sequence')
         self.create_subscription(
-            String, '/pbvs/transition_command', self.on_transition, 20
+            String, '/pbvs/press_reached', self.on_transition, 20
         )
+        self.create_subscription(String, '/pbvs/segment_timing', self.on_segment_timing, 50)
+
+    def on_joints(self, message):
+        self.joints = message
+        self.joint_received = time.monotonic()
+
+    def initialize_before_test(self):
+        """Call /initialize_arm and require success before any test goal."""
+        client = self.create_client(Trigger, '/initialize_arm')
+        try:
+            if not client.wait_for_service(timeout_sec=10.0):
+                raise RuntimeError('/initialize_arm服务不可用，停止测试')
+            print('测试前：调用 /initialize_arm…', flush=True)
+            self.record('initialization_requested')
+            response = self.wait(client.call_async(Trigger.Request()), 40.0)
+            if response is None:
+                raise RuntimeError('初始化结果为空，停止测试')
+            self.record('initialization_result', success=response.success, message=response.message)
+            print(f'初始化：success={response.success}，{response.message}', flush=True)
+            if not response.success:
+                raise RuntimeError(f'初始化失败，停止测试：{response.message}')
+        finally:
+            self.destroy_client(client)
+
+    def return_ready_before_test(self):
+        home = self.params('/elevator_sequence', [
+            'home_joint_positions', 'home_joint_tolerance',
+            'home_velocity_scaling_factor', 'home_acceleration_scaling_factor',
+            'move_group_name',
+        ])
+        # A fresh measured Ready pose needs no additional MoveIt motion.
+        deadline = time.monotonic()+2.0
+        while time.monotonic()<deadline:
+            rclpy.spin_once(self,timeout_sec=.1)
+            if self.joints is not None and time.monotonic()-self.joint_received<=.5:
+                errors = home_joint_errors(self.joints,home['home_joint_positions'])
+                if errors and max(errors)<home['home_joint_tolerance']+.001:
+                    if any(status in (1,2,3) for states in self.action_status.values() for status in states):
+                        raise RuntimeError('已有动作运行，停止测试')
+                    self.record('initial_home_verified',max_joint_error_rad=max(errors),motion_skipped=True)
+                    print('测试前：实测已在 Ready，跳过重复回位',flush=True)
+                    return
+                break
+        expected = {'/press_button','/run_elevator_sequence','/move_action','/execute_trajectory','/arm_controller/follow_joint_trajectory'}
+        end = time.monotonic()+5.0
+        while time.monotonic()<end:
+            rclpy.spin_once(self,timeout_sec=.1)
+            if expected.issubset(self.action_status):
+                if any(status in (1,2,3) for states in self.action_status.values() for status in states):
+                    raise RuntimeError('已有动作运行，停止测试前回Ready')
+                break
+        else:
+            raise RuntimeError(f'机械臂未通过Ready验收且无法确认运动空闲；未收到状态：{sorted(expected-set(self.action_status))}；先调用initialize_arm或在RViz回Ready后重试')
+        if not self.move_client.wait_for_server(timeout_sec=5):
+            raise RuntimeError('MoveIt不可用，无法规划回Ready')
+        print('测试前：规划回 Ready…',flush=True)
+        goal = make_home_moveit_goal(home['home_joint_positions'],min(.003,home['home_joint_tolerance']),home['move_group_name'],False,home['home_velocity_scaling_factor'],home['home_acceleration_scaling_factor'])
+        submission = self.move_client.send_goal_async(goal)
+        try:
+            handle = self.wait(submission,8)
+        except BaseException:
+            submission.add_done_callback(lambda f: f.result().cancel_goal_async() if f.result() is not None and f.result().accepted else None)
+            raise
+        if handle is None or not handle.accepted:
+            raise RuntimeError('测试前回Ready被拒绝；确认initialize_arm已成功')
+        self.active_goal = handle
+        response = self.wait(handle.get_result_async(),45)
+        self.active_goal = None
+        self.record('initial_home_result',status=response.status,error_code=response.result.error_code.val)
+        if response.status != GoalStatus.STATUS_SUCCEEDED or response.result.error_code.val != 1:
+            raise RuntimeError('测试前回Ready失败，停止后续测试')
+        end = time.monotonic()+3
+        while time.monotonic()<end:
+            rclpy.spin_once(self,timeout_sec=.05)
+            if self.joints is not None and time.monotonic()-self.joint_received<=.5:
+                errors = home_joint_errors(self.joints,home['home_joint_positions'])
+                if errors and max(errors)<home['home_joint_tolerance']+.001:
+                    self.record('initial_home_verified',max_joint_error_rad=max(errors))
+                    print('测试前：已回 Ready，实测验收通过',flush=True)
+                    return
+        raise RuntimeError('测试前Ready实测验收失败，停止后续测试')
+
+    def on_segment_timing(self, message):
+        self.record('segment_timing', **json.loads(message.data))
 
     def record(self, kind, **fields):
         entry = dict(time=datetime.now().astimezone().isoformat(),
@@ -43,7 +140,8 @@ class FloorIntervalTest(Node):
         try:
             event = json.loads(message.data)
             stamp = int(event['monotonic_ns'])
-            if event.get('stage') != 'button transition' or not event.get('planned'):
+            if (event.get('stage') != 'panel-normal movement' or not event.get('planned')
+                    or event.get('reference') != 'measured_tcp_press_target_verified'):
                 raise ValueError('unexpected transition event')
             if self.floor is None:
                 raise ValueError('transition received outside active floor goal')
@@ -55,7 +153,7 @@ class FloorIntervalTest(Node):
         event['floor'] = self.floor
         event['received_monotonic_ns'] = time.monotonic_ns()
         self.floor_commands.append(event)
-        self.record('transition_command', **event)
+        self.record('press_reached', **event)
         if self.last_command:
             previous = self.last_command
             interval = (stamp - previous['monotonic_ns']) / 1e9
@@ -71,10 +169,10 @@ class FloorIntervalTest(Node):
             }
             self.intervals.writerow(row)
             self.record('interval', **row)
-            print(f"平移 {previous['floor']}/{previous['target']} → "
+            print(f"按键间隔 {previous['floor']}/{previous['target']} → "
                   f"{self.floor}/{event['target']}: {interval:.3f} s", flush=True)
         else:
-            print(f"首个平移指令：{self.floor}/{event['target']}", flush=True)
+            print(f"首个按压到位事件：{self.floor}/{event['target']}", flush=True)
         self.last_command = event
 
     def wait(self, future, timeout):
@@ -111,7 +209,8 @@ class FloorIntervalTest(Node):
             'preplan_retry_attempts', 'preplan_retry_timeout_sec',
             'sequence_snapshot_acquire_timeout',
             'distance_mm', 'sequence_retract_distance_mm',
-            'transition_velocity_scaling_factor',
+            'moveit_velocity_scaling_factor', 'moveit_acceleration_scaling_factor',
+            'transition_acceleration_scaling_factor', 'transition_velocity_scaling_factor',
             'press_velocity_scaling_factor', 'retract_velocity_scaling_factor',
         ])
         sequence = self.params('/elevator_sequence', [
@@ -131,7 +230,7 @@ class FloorIntervalTest(Node):
         publishers = []
         while time.monotonic() < deadline:
             publishers = self.get_publishers_info_by_topic(
-                '/pbvs/transition_command'
+                '/pbvs/press_reached'
             )
             if any(info.node_name == 'piper_pbvs_controller'
                    for info in publishers):
@@ -139,7 +238,7 @@ class FloorIntervalTest(Node):
             rclpy.spin_once(self, timeout_sec=0.1)
         else:
             raise RuntimeError(
-                '未发现 /pbvs/transition_command 发布者；请停止旧 launch，'
+                '未发现 /pbvs/press_reached 发布者；请停止旧 launch，'
                 '用已构建的 WZL 工作区重新启动并调用 /initialize_arm，'
                 '再运行测试脚本'
             )
@@ -150,11 +249,11 @@ class FloorIntervalTest(Node):
               f"{', '.join(map(str, floors))}。", flush=True)
 
     def execute_floor(self, floor):
-        if self.last_command is not None and floor != self.last_command['floor'] + 1:
+        if self.last_command is not None:
             self.record('interval_discontinuity',
                         previous_floor=self.last_command['floor'],
                         next_floor=floor,
-                        reason='skipped floor; cross-floor interval not calculated')
+                        reason='new floor; only within-floor press intervals are measured')
             self.last_command = None
         self.floor = floor
         self.floor_commands = []
@@ -178,13 +277,14 @@ class FloorIntervalTest(Node):
         self.record('goal_result', status=response.status,
                     success=result.success, message=result.message,
                     hard_safety_stop=result.hard_safety_stop,
-                    transition_commands=len(self.floor_commands))
+                    press_reached_events=len(self.floor_commands))
         print(f'楼层 {floor}: {result.message}', flush=True)
         if response.status != GoalStatus.STATUS_SUCCEEDED or not result.success:
             raise RuntimeError(f'楼层 {floor} 失败；已停止后续测试，不自动回位')
-        expected = len(str(floor))  # Later digits plus the final key_ok.
-        if len(self.floor_commands) != expected:
-            raise RuntimeError(f'楼层 {floor} 预期{expected}条平移指令，'
+        expected_targets = [f'key_{digit}' for digit in str(floor)] + ['key_ok']
+        expected = len(expected_targets)
+        if [event['target'] for event in self.floor_commands] != expected_targets:
+            raise RuntimeError(f'楼层 {floor} 预期{expected}条按压到位事件，'
                                f'实际记录{len(self.floor_commands)}条；停止测试')
         self.floor = None
 
@@ -213,7 +313,7 @@ def selected_floors(start=None, floors=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='依次测试楼层并记录平移指令下达间隔')
+    parser = argparse.ArgumentParser(description='依次测试楼层并记录实测按压到位间隔（包含OK）')
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--start', type=int,
                        help='起始楼层，1～19；例如失败在13楼时用 --start 13')
@@ -243,6 +343,8 @@ def main():
         try:
             node = FloorIntervalTest(events, writer)
             node.preflight(floors)
+            node.initialize_before_test()
+            node.return_ready_before_test()
             for floor in floors:
                 node.execute_floor(floor)
                 table.flush()

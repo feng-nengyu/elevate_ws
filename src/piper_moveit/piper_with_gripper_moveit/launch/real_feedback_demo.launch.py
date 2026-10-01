@@ -104,7 +104,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'trajectory_settle_cycles',
-            default_value='5',
+            default_value='1',
             description='Required consecutive final in-tolerance samples.',
         ),
         DeclareLaunchArgument(
