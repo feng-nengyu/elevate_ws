@@ -5,6 +5,7 @@ piper_pbvs_controller:
     close_panel_sequence: false
     preplan_sequence: true
     preplan_retry_attempts: 2
+    preplan_retry_timeout_sec: 60.0
     sequence_retract_distance_mm: 20.0
 
     base_frame: base_link
@@ -38,6 +39,7 @@ piper_pbvs_controller:
     stable_position_spread: 0.003
     stable_angle_spread: 0.052359878
     target_acquire_timeout: 5.0
+    sequence_snapshot_acquire_timeout: 15.0
     target_pause_age: 0.5
     tcp_feedback_timeout: 0.5
     moveit_timeout: 20.0

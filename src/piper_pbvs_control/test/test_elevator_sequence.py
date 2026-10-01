@@ -384,3 +384,22 @@ def test_detection_failure_does_not_send_recovery_motion():
             'key_3',
             'target not found',
         )
+
+@pytest.mark.parametrize(('acceptance', 'planned'), [(0.012, 0.003), (0.002, 0.002)])
+def test_sequence_home_planning_goal_is_tighter_than_feedback_gate(acceptance, planned):
+    from piper_pbvs_control.elevator_sequence import ElevatorSequence
+
+    node = SimpleNamespace(
+        home_joint_positions=DEFAULT_HOME_JOINT_POSITIONS,
+        home_joint_tolerance=acceptance,
+        move_group_name='arm',
+        enable_motion=True,
+        home_velocity_scaling_factor=0.07,
+        home_acceleration_scaling_factor=0.07,
+    )
+    goal = ElevatorSequence._home_goal(node)
+    constraints = goal.request.goal_constraints[0].joint_constraints
+    assert all(item.tolerance_above == pytest.approx(planned)
+               and item.tolerance_below == pytest.approx(planned)
+               for item in constraints)
+    assert node.home_joint_tolerance == acceptance

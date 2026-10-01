@@ -72,6 +72,7 @@ class PiperPbvsController(Node):
     """Coordinate perception and guarded MoveIt coarse positioning."""
 
     ARM_JOINT_NAMES = tuple(f'joint{index}' for index in range(1, 7))
+    APPROACH_POSITION_TOLERANCE = 0.007
     X_POSITION_TOLERANCE = 0.006
     X_ORIENTATION_TOLERANCE = 0.075
 
@@ -207,6 +208,7 @@ class PiperPbvsController(Node):
             'close_panel_sequence': False,
             'preplan_sequence': True,
             'preplan_retry_attempts': 2,
+            'preplan_retry_timeout_sec': 60.0,
             'sequence_retract_distance_mm': 20.0,
             'base_frame': 'base_link',
             'tcp_frame': 'tcp_link',
@@ -227,6 +229,7 @@ class PiperPbvsController(Node):
             'stable_position_spread': 0.003,
             'stable_angle_spread': math.radians(3.0),
             'target_acquire_timeout': 5.0,
+            'sequence_snapshot_acquire_timeout': 15.0,
             'target_pause_age': 0.5,
             'tcp_feedback_timeout': 0.5,
             'moveit_timeout': 20.0,
@@ -301,6 +304,9 @@ class PiperPbvsController(Node):
         self.preplan_retry_attempts = int(values['preplan_retry_attempts'])
         if not 0 <= self.preplan_retry_attempts <= 2:
             raise ValueError('preplan_retry_attempts must be 0, 1, or 2')
+        self.preplan_retry_timeout_sec = float(values['preplan_retry_timeout_sec'])
+        if not math.isfinite(self.preplan_retry_timeout_sec) or not 0 <= self.preplan_retry_timeout_sec <= 600:
+            raise ValueError('preplan_retry_timeout_sec must be within 0..600 seconds')
 
         self.distance_m = x_distance_metres(values['distance_mm'])
 
@@ -330,6 +336,7 @@ class PiperPbvsController(Node):
             'enable_motion',
             'coarse_correction_attempts',
             'preplan_retry_attempts',
+            'preplan_retry_timeout_sec',
             'distance_mm',
         } | set(signed_float_names)
         for name, value in values.items():
@@ -669,7 +676,18 @@ class PiperPbvsController(Node):
                     return result
             self._feedback(goal_handle)
             time.sleep(0.05)
-        raise TaskFailure(timeout_message)
+        now = time.monotonic()
+        with self.data_lock:
+            recent_count = sum(
+                now - sample[2] <= self.target_pause_age
+                for sample in self.target_samples
+            )
+            latest_received = self.latest_target_received
+        latest_age = (now - latest_received) if latest_received else math.inf
+        raise TaskFailure(
+            f'{timeout_message}; recent_samples={recent_count}/'
+            f'{self.stable_sample_count}, latest_age_s={latest_age:.2f}'
+        )
 
     def _apply_collision_scene(self, button_position, button_quaternion):
         """Add the elevator panel and eye-in-hand camera collision boxes."""
@@ -882,6 +900,11 @@ class PiperPbvsController(Node):
         movement_label,
     ):
         """Require fresh measured TCP feedback at a generic MoveIt target."""
+        position_tolerance = (
+            self.APPROACH_POSITION_TOLERANCE
+            if movement_label in ('coarse approach', 'button transition')
+            else self.X_POSITION_TOLERANCE
+        )
         deadline = time.monotonic() + 3.0
         last_position_error = math.inf
         last_angular_error = math.inf
@@ -904,7 +927,7 @@ class PiperPbvsController(Node):
             last_angular_error = angular_error
             self._feedback(goal_handle, position_error, angular_error)
             if (
-                position_error <= self.X_POSITION_TOLERANCE
+                position_error <= position_tolerance
                 and angular_error <= self.X_ORIENTATION_TOLERANCE
             ):
                 return current_position, current_quaternion
@@ -1212,7 +1235,11 @@ class PiperPbvsController(Node):
             # Drain images from the preceding interest before taking samples.
             time.sleep(0.3)
             self._clear_target_tracking()
-            collected[name] = self._wait_for_stable_target(goal_handle)
+            collected[name] = self._wait_for_stable_target(
+                goal_handle,
+                timeout=self.sequence_snapshot_acquire_timeout,
+                timeout_message=f'{name} stable button pose acquisition timed out',
+            )
             with self.data_lock:
                 joints = copy.deepcopy(self.latest_joint_positions)
                 age = time.monotonic() - self.latest_joint_received
@@ -1307,9 +1334,20 @@ class PiperPbvsController(Node):
         return wrapped.result
 
     def _plan_segment_with_retry(self, goal, goal_handle, name, stage):
-        """Retry only a completed plan-only failure; no trajectory has run."""
-        total = self.preplan_retry_attempts + 1
-        for attempt in range(1, total + 1):
+        """Retry completed plan-only failures; no trajectory has run yet."""
+        started = time.monotonic()
+        timeout = self.preplan_retry_timeout_sec
+        # A positive time budget supersedes the legacy attempt-count limit.
+        deadline = started + timeout if timeout > 0 else None
+        attempt = 0
+        while True:
+            self._guard(goal_handle)
+            if deadline is not None and attempt > 0 and time.monotonic() >= deadline:
+                raise TaskFailure(
+                    f'{name} {stage} planning failed after {attempt} attempts '
+                    f'and {timeout:g}s retry budget'
+                )
+            attempt += 1
             try:
                 return self._wait_planned_action(
                     self.move_group_client, copy.deepcopy(goal),
@@ -1317,13 +1355,19 @@ class PiperPbvsController(Node):
                 )
             except PlanningFailure as error:
                 self._guard(goal_handle)
-                if attempt == total:
+                elapsed = time.monotonic() - started
+                exhausted = (elapsed >= timeout if deadline is not None
+                             else attempt > self.preplan_retry_attempts)
+                if exhausted:
+                    detail = (f'{timeout:g}s retry budget'
+                              if deadline is not None
+                              else f'{attempt} attempts')
                     raise TaskFailure(
-                        f'{name} {stage} planning failed after {total} attempts: {error}'
+                        f'{name} {stage} planning failed after {detail}: {error}'
                     ) from error
                 self.get_logger().warning(
-                    f'【提前规划重试】{name} {stage} 第{attempt}/{total}次失败：'
-                    f'{error}；从相同起点重新规划'
+                    f'【提前规划重试】{name} {stage} 第{attempt}次失败，'
+                    f'已耗时{elapsed:.1f}s：{error}；从相同起点重新规划'
                 )
 
     def _preplan_snapshot(self, names, goal_handle):

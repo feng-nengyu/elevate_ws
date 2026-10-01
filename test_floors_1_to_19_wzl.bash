@@ -10,4 +10,4 @@ if [[ "$actual" != "$expected" ]]; then
   echo "加载了错误的控制包: $actual" >&2
   exit 1
 fi
-exec python3 "$workspace/scripts/test_floors_1_to_19_wzl.py"
+exec python3 "$workspace/scripts/test_floors_1_to_19_wzl.py" "$@"

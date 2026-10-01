@@ -113,7 +113,9 @@ def generate_launch_description():
                 ' python',
             ],
             parameters=[{
-                'device': LaunchConfiguration('device'),
+                'device': ParameterValue(
+                    LaunchConfiguration('device'), value_type=str,
+                ),
                 'model_path': LaunchConfiguration('model_path'),
                 'interest': LaunchConfiguration('interest'),
                 'depth_threshold': ParameterValue(

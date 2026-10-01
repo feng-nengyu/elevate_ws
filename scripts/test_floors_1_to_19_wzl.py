@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Execute floor goals 1..19 and time submitted button-transition commands."""
 
+import argparse
 import csv
 from datetime import datetime, timezone
 import json
@@ -104,10 +105,11 @@ class FloorIntervalTest(Node):
             values[name] = list(item) if value.type == 8 else item
         return values
 
-    def preflight(self):
+    def preflight(self, floors):
         pbvs = self.params('/piper_pbvs_controller', [
             'enable_motion', 'close_panel_sequence', 'preplan_sequence',
-            'preplan_retry_attempts',
+            'preplan_retry_attempts', 'preplan_retry_timeout_sec',
+            'sequence_snapshot_acquire_timeout',
             'distance_mm', 'sequence_retract_distance_mm',
             'transition_velocity_scaling_factor',
             'press_velocity_scaling_factor', 'retract_velocity_scaling_factor',
@@ -142,12 +144,18 @@ class FloorIntervalTest(Node):
                 '再运行测试脚本'
             )
         self.record('configuration', pbvs=pbvs, sequence=sequence,
-                    floors=list(range(1, 20)))
+                    floors=list(floors))
         print(f"实测行程 {pbvs['distance_mm']:g} mm，退回 "
-              f"{pbvs['sequence_retract_distance_mm']:g} mm；测试楼层 1～19。",
-              flush=True)
+              f"{pbvs['sequence_retract_distance_mm']:g} mm；测试楼层 "
+              f"{', '.join(map(str, floors))}。", flush=True)
 
     def execute_floor(self, floor):
+        if self.last_command is not None and floor != self.last_command['floor'] + 1:
+            self.record('interval_discontinuity',
+                        previous_floor=self.last_command['floor'],
+                        next_floor=floor,
+                        reason='skipped floor; cross-floor interval not calculated')
+            self.last_command = None
         self.floor = floor
         self.floor_commands = []
         goal = PressButton.Goal()
@@ -190,7 +198,32 @@ class FloorIntervalTest(Node):
             print(f'取消请求未确认：{error}', flush=True)
 
 
+def selected_floors(start=None, floors=None):
+    """Choose exactly the requested floors before creating ROS interfaces."""
+    if floors is not None:
+        if not floors or any(not 1 <= floor <= 19 for floor in floors):
+            raise ValueError('--floors 中的楼层必须在1～19之间')
+        if floors != sorted(set(floors)):
+            raise ValueError('--floors 必须按升序给出，且不能重复')
+        return list(floors)
+    first = 1 if start is None else start
+    if not 1 <= first <= 19:
+        raise ValueError('--start 必须在1～19之间')
+    return list(range(first, 20))
+
+
 def main():
+    parser = argparse.ArgumentParser(description='依次测试楼层并记录平移指令下达间隔')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--start', type=int,
+                       help='起始楼层，1～19；例如失败在13楼时用 --start 13')
+    group.add_argument('--floors', type=int, nargs='+', metavar='N',
+                       help='仅测试指定楼层，如 --floors 16 19')
+    args = parser.parse_args()
+    try:
+        floors = selected_floors(args.start, args.floors)
+    except ValueError as error:
+        parser.error(str(error))
     directory = Path(__file__).resolve().parents[1] / 'floor_interval_logs'
     directory.mkdir(parents=True, exist_ok=True)
     stem = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
@@ -209,11 +242,11 @@ def main():
         writer.writeheader()
         try:
             node = FloorIntervalTest(events, writer)
-            node.preflight()
-            for floor in range(1, 20):
+            node.preflight(floors)
+            for floor in floors:
                 node.execute_floor(floor)
                 table.flush()
-            print(f'1～19楼测试完成；间隔见 {csv_path}', flush=True)
+            print(f'楼层 {", ".join(map(str, floors))} 测试完成；间隔见 {csv_path}', flush=True)
         except (Exception, KeyboardInterrupt) as error:
             code = 2
             print(f'测试停止：{error}', flush=True)

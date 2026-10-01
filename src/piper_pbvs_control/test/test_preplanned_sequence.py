@@ -41,6 +41,8 @@ def test_entire_batch_failure_commits_no_trajectory():
     n.coarse_horizontal_offset=.026;n.coarse_vertical_offset=.007
     n.moveit_timeout=20
     n.preplan_retry_attempts=2
+    n.preplan_retry_timeout_sec=0
+    n._guard=Mock()
     n.move_group_client=Mock()
     n._apply_collision_scene=Mock();n._set_state=Mock()
     n._control_quaternion=Mock(return_value=np.array([0,0,0,1]))
@@ -80,6 +82,8 @@ def test_repeated_digits_are_planned_in_order_before_any_execution():
     n.coarse_standoff=.08;n.distance_m=.067;n.sequence_retract_distance_mm=20
     n.coarse_horizontal_offset=.026;n.coarse_vertical_offset=.007;n.moveit_timeout=20
     n.preplan_retry_attempts=2
+    n.preplan_retry_timeout_sec=0
+    n._guard=Mock()
     n.move_group_client=Mock();n.execute_trajectory_client=Mock()
     n.base_frame='base_link';n.tcp_frame='tcp_link'
     n._apply_collision_scene=Mock();n._set_state=Mock();n.get_logger=Mock(return_value=Mock())
@@ -103,6 +107,7 @@ def test_repeated_digits_are_planned_in_order_before_any_execution():
 def test_preplan_failure_retries_twice_from_same_goal_without_execution():
     n = object.__new__(PiperPbvsController)
     n.preplan_retry_attempts = 2
+    n.preplan_retry_timeout_sec = 0
     n.move_group_client = Mock()
     n.moveit_timeout = 20
     n._guard = Mock()
@@ -127,6 +132,7 @@ def test_preplan_failure_retries_twice_from_same_goal_without_execution():
 def test_preplan_failure_exhausts_retries_before_any_execution():
     n = object.__new__(PiperPbvsController)
     n.preplan_retry_attempts = 2
+    n.preplan_retry_timeout_sec = 0
     n.move_group_client = Mock()
     n.moveit_timeout = 20
     n._guard = Mock()
@@ -140,8 +146,10 @@ def test_preplan_failure_exhausts_retries_before_any_execution():
 def test_transport_or_execution_failure_is_not_retried():
     n = object.__new__(PiperPbvsController)
     n.preplan_retry_attempts = 2
+    n.preplan_retry_timeout_sec = 0
     n.move_group_client = Mock()
     n.moveit_timeout = 20
+    n._guard = Mock()
     n._wait_planned_action = Mock(side_effect=TaskFailure('timeout or controller failure'))
     with pytest.raises(TaskFailure, match='timeout or controller failure'):
         n._plan_segment_with_retry(MoveGroup.Goal(), None, 'key_0', 'button transition')
@@ -182,3 +190,59 @@ def test_only_plan_only_result_is_retryable():
             n.execute_trajectory_client, ExecuteTrajectory.Goal(), None, 20
         )
     assert not isinstance(error.value, PlanningFailure)
+
+
+def test_time_budget_allows_more_than_two_replans(monkeypatch):
+    from piper_pbvs_control import pbvs_controller as module
+
+    n = object.__new__(PiperPbvsController)
+    n.preplan_retry_attempts = 2
+    n.preplan_retry_timeout_sec = 60.0
+    n.move_group_client = Mock()
+    n.moveit_timeout = 20
+    n._guard = Mock()
+    n.get_logger = Mock(return_value=Mock())
+    clock = [100.0]
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock[0])
+    completed = object()
+    attempts = [0]
+
+    def plan(*_):
+        attempts[0] += 1
+        clock[0] += 10.0
+        if attempts[0] < 5:
+            raise PlanningFailure('MoveIt plan-only failed with error code -2')
+        return completed
+
+    n._wait_planned_action = Mock(side_effect=plan)
+    assert n._plan_segment_with_retry(
+        MoveGroup.Goal(), None, 'key_1', 'panel-normal movement'
+    ) is completed
+    assert attempts[0] == 5
+
+
+def test_time_budget_stops_after_sixty_seconds(monkeypatch):
+    from piper_pbvs_control import pbvs_controller as module
+
+    n = object.__new__(PiperPbvsController)
+    n.preplan_retry_attempts = 2
+    n.preplan_retry_timeout_sec = 60.0
+    n.move_group_client = Mock()
+    n.moveit_timeout = 20
+    n._guard = Mock()
+    n.get_logger = Mock(return_value=Mock())
+    clock = [100.0]
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock[0])
+    attempts = [0]
+
+    def fail(*_):
+        attempts[0] += 1
+        clock[0] += 10.0
+        raise PlanningFailure('MoveIt plan-only failed with error code -2')
+
+    n._wait_planned_action = Mock(side_effect=fail)
+    with pytest.raises(TaskFailure, match='60s retry budget'):
+        n._plan_segment_with_retry(
+            MoveGroup.Goal(), None, 'key_1', 'panel-normal movement'
+        )
+    assert attempts[0] == 6

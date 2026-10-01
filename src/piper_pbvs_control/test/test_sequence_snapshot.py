@@ -41,6 +41,7 @@ def test_failed_preparation_never_commits_partial_snapshot():
     n.latest_joint_positions = [0.0] * 6
     n.latest_joint_received = time.monotonic()
     n.tcp_feedback_timeout = 0.5
+    n.sequence_snapshot_acquire_timeout = 15.0
     n._latest_tcp_arrays = Mock(return_value=(np.zeros(3),np.array([0,0,0,1])))
     n._set_state = Mock()
     n._select_interest = Mock()
@@ -49,3 +50,5 @@ def test_failed_preparation_never_commits_partial_snapshot():
     with pytest.raises(TaskFailure):
         n._prepare_sequence_snapshot(['key_1','key_0'],None)
     assert n.sequence_snapshot == {}
+    assert n._wait_for_stable_target.call_args_list[0].kwargs['timeout'] == 15.0
+    assert n._wait_for_stable_target.call_args_list[0].kwargs['timeout_message'].startswith('key_1')

@@ -25,6 +25,7 @@ from std_msgs.msg import String, Float64
 
 ARM_JOINT_NAMES = tuple(f'joint{index}' for index in range(1, 7))
 HOME_JOINT_ACCEPTANCE_SLACK = 0.001
+HOME_PLAN_TARGET_TOLERANCE = 0.003
 DEFAULT_HOME_JOINT_POSITIONS = (
     -1.557051440,
     0.234953236,
@@ -470,7 +471,7 @@ class ElevatorSequence(Node):
         """Build the current configured MoveIt home goal."""
         return make_home_moveit_goal(
             self.home_joint_positions,
-            self.home_joint_tolerance,
+            min(HOME_PLAN_TARGET_TOLERANCE, self.home_joint_tolerance),
             self.move_group_name,
             not self.enable_motion,
             self.home_velocity_scaling_factor,
@@ -531,6 +532,7 @@ class ElevatorSequence(Node):
         """Require fresh real joint feedback inside the home tolerance."""
         deadline = time.monotonic() + min(3.0, self.home_timeout)
         last_max_error = math.inf
+        worst_joint_detail = 'no valid joint feedback'
         while time.monotonic() < deadline:
             if goal_handle.is_cancel_requested:
                 raise SequenceCanceled('canceled during home verification')
@@ -547,7 +549,14 @@ class ElevatorSequence(Node):
                     self.home_joint_positions,
                 )
                 if errors is not None:
-                    last_max_error = max(errors)
+                    worst_index = max(range(len(errors)), key=errors.__getitem__)
+                    last_max_error = errors[worst_index]
+                    by_name = dict(zip(message.name, message.position))
+                    worst_name = ARM_JOINT_NAMES[worst_index]
+                    worst_joint_detail = (
+                        f'{worst_name}: actual={by_name[worst_name]:.6f} rad, '
+                        f'target={self.home_joint_positions[worst_index]:.6f} rad'
+                    )
                     if home_joint_error_accepted(
                         last_max_error,
                         self.home_joint_tolerance,
@@ -567,7 +576,8 @@ class ElevatorSequence(Node):
             f'max_error={last_max_error:.6f} rad, '
             f'tolerance={self.home_joint_tolerance:.6f} rad, '
             'allowed_overrun<'
-            f'{HOME_JOINT_ACCEPTANCE_SLACK:.6f} rad'
+            f'{HOME_JOINT_ACCEPTANCE_SLACK:.6f} rad; '
+            f'{worst_joint_detail}'
         )
 
     def _press_event_callback(self, message):
