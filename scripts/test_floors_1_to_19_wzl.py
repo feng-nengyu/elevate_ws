@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute floor goals 1..19 and time each forward-press submission."""
+"""Execute floor goals 1..19 and time each measured press completion."""
 
 import argparse
 import csv
@@ -11,6 +11,7 @@ import time
 from action_msgs.msg import GoalStatus, GoalStatusArray
 from moveit_msgs.action import MoveGroup
 from sensor_msgs.msg import JointState
+from geometry_msgs.msg import PoseStamped
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from piper_pbvs_control.elevator_sequence import make_home_moveit_goal, home_joint_errors
 from piper_msgs.action import PressButton
@@ -34,9 +35,11 @@ class FloorIntervalTest(Node):
         self.floor_commands = []
         self.joints = None
         self.joint_received = 0.0
+        self.last_tcp_record_ns = 0
         self.action_status = {}
         self.move_client = ActionClient(self, MoveGroup, '/move_action')
         self.create_subscription(JointState, '/joint_states', self.on_joints, 10)
+        self.create_subscription(PoseStamped, '/tcp_pose', self.on_tcp_pose, 10)
         qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
         for name in ('/press_button', '/run_elevator_sequence', '/move_action', '/execute_trajectory', '/arm_controller/follow_joint_trajectory'):
             self.create_subscription(GoalStatusArray, name+'/_action/status', lambda msg, action=name: self.action_status.__setitem__(action,[entry.status for entry in msg.status_list]), qos)
@@ -45,6 +48,18 @@ class FloorIntervalTest(Node):
             String, '/pbvs/press_reached', self.on_transition, 20
         )
         self.create_subscription(String, '/pbvs/segment_timing', self.on_segment_timing, 50)
+
+    def on_tcp_pose(self, message):
+        now = time.monotonic_ns()
+        if self.floor is None or now-self.last_tcp_record_ns < 100_000_000:
+            return
+        self.last_tcp_record_ns = now
+        pose = message.pose
+        self.record('measured_tcp_trace', received_monotonic_ns=now,
+                    source_stamp_ns=message.header.stamp.sec*1_000_000_000+message.header.stamp.nanosec,
+                    frame_id=message.header.frame_id,
+                    position_m=[pose.position.x,pose.position.y,pose.position.z],
+                    quaternion_xyzw=[pose.orientation.x,pose.orientation.y,pose.orientation.z,pose.orientation.w])
 
     def on_joints(self, message):
         self.joints = message
@@ -58,7 +73,7 @@ class FloorIntervalTest(Node):
                 raise RuntimeError('/initialize_arm服务不可用，停止测试')
             print('测试前：调用 /initialize_arm…', flush=True)
             self.record('initialization_requested')
-            response = self.wait(client.call_async(Trigger.Request()), 40.0)
+            response = self.wait(client.call_async(Trigger.Request()), 40.0, description='初始化 /initialize_arm')
             if response is None:
                 raise RuntimeError('初始化结果为空，停止测试')
             self.record('initialization_result', success=response.success, message=response.message)
@@ -103,14 +118,14 @@ class FloorIntervalTest(Node):
         goal = make_home_moveit_goal(home['home_joint_positions'],min(.003,home['home_joint_tolerance']),home['move_group_name'],False,home['home_velocity_scaling_factor'],home['home_acceleration_scaling_factor'])
         submission = self.move_client.send_goal_async(goal)
         try:
-            handle = self.wait(submission,8)
+            handle = self.wait(submission,8,description='Ready回位目标提交')
         except BaseException:
             submission.add_done_callback(lambda f: f.result().cancel_goal_async() if f.result() is not None and f.result().accepted else None)
             raise
         if handle is None or not handle.accepted:
             raise RuntimeError('测试前回Ready被拒绝；确认initialize_arm已成功')
         self.active_goal = handle
-        response = self.wait(handle.get_result_async(),45)
+        response = self.wait(handle.get_result_async(),45,description='Ready回位结果')
         self.active_goal = None
         self.record('initial_home_result',status=response.status,error_code=response.result.error_code.val)
         if response.status != GoalStatus.STATUS_SUCCEEDED or response.result.error_code.val != 1:
@@ -127,7 +142,24 @@ class FloorIntervalTest(Node):
         raise RuntimeError('测试前Ready实测验收失败，停止后续测试')
 
     def on_segment_timing(self, message):
-        self.record('segment_timing', **json.loads(message.data))
+        event = json.loads(message.data)
+        if 'kind' in event:
+            event['timing_kind'] = event.pop('kind')
+        self.record('segment_timing', **event)
+        if event.get('timing_kind') in ('planning_selection','retract_selection'):
+            print(f"路径选择 {event['target']}/{event.get('stage', 'planning')}: 候选{event['candidate_durations_s']}，选用{event['selected_duration_s']:.3f}s",flush=True)
+        elif event.get('timing_kind') == 'sequence_selection':
+            intervals=', '.join(f'{v:.3f}' for v in event['planned_press_intervals_s'])
+            print(f'整轮路径选择：理论到位间隔 [{intervals}] s（未含实机交接）',flush=True)
+        elif event.get('timing_kind') == 'planning_total':
+            print(f"整轮预规划耗时：{event['elapsed_s']:.3f}s（不含视觉采样）",flush=True)
+        elif event.get('timing_kind') == 'joint_plan_profile':
+            joints=event.get('joints',[])
+            if joints and event.get('stage') == 'button transition':
+                largest=max(joints,key=lambda j:j['travel_rad'])
+                print(f"平移关节诊断 {event['target']}: {largest['joint']}规划累计转角={largest['travel_rad']*180/3.141592653589793:.1f}°",flush=True)
+        elif event.get('tcp_verification_s',0) >= .1:
+            print(f"到位等待 {event['target']}/{event['stage']}: {event['tcp_verification_s']:.3f}s",flush=True)
 
     def record(self, kind, **fields):
         entry = dict(time=datetime.now().astimezone().isoformat(),
@@ -175,11 +207,11 @@ class FloorIntervalTest(Node):
             print(f"首个按压到位事件：{self.floor}/{event['target']}", flush=True)
         self.last_command = event
 
-    def wait(self, future, timeout):
+    def wait(self, future, timeout, description="异步请求"):
         deadline = time.monotonic() + timeout
         while not future.done():
             if time.monotonic() >= deadline:
-                raise TimeoutError(f'等待Action超时（{timeout:g}秒）')
+                raise TimeoutError(f'{description}超时（{timeout:g}秒）')
             rclpy.spin_once(self, timeout_sec=0.1)
         return future.result()
 
@@ -189,8 +221,14 @@ class FloorIntervalTest(Node):
             raise RuntimeError(f'{node} 参数服务不可用')
         request = GetParameters.Request()
         request.names = names
-        response = self.wait(client.call_async(request), 8.0)
-        self.destroy_client(client)
+        future = client.call_async(request)
+        try:
+            response = self.wait(future, 20.0, description=f'读取 {node} 参数')
+        except TimeoutError:
+            future.cancel()
+            raise
+        finally:
+            self.destroy_client(client)
         if response is None or len(response.values) != len(names):
             raise RuntimeError(f'{node} 参数读取失败')
         fields = {1: 'bool_value', 2: 'integer_value', 3: 'double_value',
@@ -206,12 +244,13 @@ class FloorIntervalTest(Node):
     def preflight(self, floors):
         pbvs = self.params('/piper_pbvs_controller', [
             'enable_motion', 'close_panel_sequence', 'preplan_sequence',
-            'preplan_retry_attempts', 'preplan_retry_timeout_sec',
+            'preplan_retry_attempts', 'preplan_retry_timeout_sec', 'transition_plan_candidates', 'retract_plan_candidates', 'sequence_search_width', 'planning_interval_target_sec',
             'sequence_snapshot_acquire_timeout',
             'distance_mm', 'sequence_retract_distance_mm',
             'moveit_velocity_scaling_factor', 'moveit_acceleration_scaling_factor',
             'transition_acceleration_scaling_factor', 'transition_velocity_scaling_factor',
             'press_velocity_scaling_factor', 'retract_velocity_scaling_factor',
+            'press_acceleration_scaling_factor', 'retract_acceleration_scaling_factor',
         ])
         sequence = self.params('/elevator_sequence', [
             'enable_motion', 'close_panel_sequence', 'home_joint_positions',
@@ -242,7 +281,18 @@ class FloorIntervalTest(Node):
                 '用已构建的 WZL 工作区重新启动并调用 /initialize_arm，'
                 '再运行测试脚本'
             )
+        wrist_limits = self.params('/move_group', [
+            'robot_description_planning.joint_limits.joint4.has_acceleration_limits',
+            'robot_description_planning.joint_limits.joint4.max_acceleration',
+            'robot_description_planning.joint_limits.joint6.has_acceleration_limits',
+            'robot_description_planning.joint_limits.joint6.max_acceleration',
+        ])
+        driver = self.params('/piper_trajectory_controller', ['speed_percent'])
+        model = self.params('/move_group', ['robot_description', 'robot_description_semantic'])
         self.record('configuration', pbvs=pbvs, sequence=sequence,
+                    wrist_limits=wrist_limits, driver=driver, model=model,
+                    timing_reference='measured_tcp_press_target_verified',
+                    trace_sampling=dict(measured_tcp_hz=10,selected_joint_points_per_segment=101),
                     floors=list(floors))
         print(f"实测行程 {pbvs['distance_mm']:g} mm，退回 "
               f"{pbvs['sequence_retract_distance_mm']:g} mm；测试楼层 "
@@ -261,11 +311,11 @@ class FloorIntervalTest(Node):
         goal.target_name = str(floor)
         print(f'\n测试楼层 {floor}', flush=True)
         self.record('goal_submitted', target_name=goal.target_name)
-        handle = self.wait(self.client.send_goal_async(goal), 8.0)
+        handle = self.wait(self.client.send_goal_async(goal), 8.0, description=f'楼层 {floor} 目标提交')
         if handle is None or not handle.accepted:
             raise RuntimeError(f'楼层 {floor} 任务未被接受')
         self.active_goal = handle
-        response = self.wait(handle.get_result_async(), 240.0)
+        response = self.wait(handle.get_result_async(), 240.0, description=f'楼层 {floor} 任务结果')
         self.active_goal = None
         # Drain command events queued just ahead of the Action result.
         until = time.monotonic() + 0.3

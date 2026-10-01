@@ -213,3 +213,23 @@ def test_x_advance_uses_measured_t0_and_only_offsets_base_x():
 def test_approach_limit_is_eight_mm_and_press_stays_six_mm():
     assert PiperPbvsController.APPROACH_POSITION_TOLERANCE == 0.008
     assert PiperPbvsController.X_POSITION_TOLERANCE == 0.006
+
+
+@pytest.mark.parametrize('stage,allowed', [('panel retract',True),('panel-normal movement',False)])
+def test_six_point_seven_six_mm_passes_only_relaxed_retract(stage,allowed,monkeypatch):
+    from unittest.mock import Mock
+    from piper_pbvs_control import pbvs_controller as module
+    from piper_pbvs_control.pbvs_controller import TaskFailure
+    n=object.__new__(PiperPbvsController)
+    n._guard=Mock();n._feedback=Mock()
+    n._latest_tcp_arrays=Mock(return_value=(np.array([.00676,0,0]),np.array([0,0,0,1])))
+    clock=iter([0.,1.,4.]);monkeypatch.setattr(module.time,'monotonic',lambda:next(clock))
+    monkeypatch.setattr(module.time,'sleep',lambda _:None)
+    args=(None,np.zeros(3),np.array([0,0,0,1]),stage)
+    if allowed:
+        n._verify_target_pose(*args)
+    else:
+        with pytest.raises(TaskFailure,match='position_limit=6.00 mm'):
+            n._verify_target_pose(*args)
+    assert PiperPbvsController.RETRACT_POSITION_TOLERANCE==.007
+    assert PiperPbvsController.X_POSITION_TOLERANCE==.006

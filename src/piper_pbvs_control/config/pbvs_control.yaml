@@ -6,6 +6,9 @@ piper_pbvs_controller:
     preplan_sequence: true
     preplan_retry_attempts: 2
     transition_plan_candidates: 3
+    retract_plan_candidates: 2
+    sequence_search_width: 2
+    planning_interval_target_sec: 0.0
     preplan_retry_timeout_sec: 60.0
     sequence_retract_distance_mm: 15.0
 

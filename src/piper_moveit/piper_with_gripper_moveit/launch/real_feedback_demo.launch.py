@@ -36,6 +36,7 @@ def generate_launch_description():
             'allow_trajectory_execution': LaunchConfiguration(
                 'allow_trajectory_execution'
             ),
+            'wrist_joint_acceleration_limit': LaunchConfiguration('wrist_joint_acceleration_limit'),
         }.items(),
     )
     rviz = IncludeLaunchDescription(
@@ -91,6 +92,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('use_rviz', default_value='true'),
+        DeclareLaunchArgument('wrist_joint_acceleration_limit', default_value='0.0'),
         DeclareLaunchArgument('can_port', default_value='can0'),
         DeclareLaunchArgument(
             'trajectory_speed_percent',

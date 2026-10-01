@@ -1,0 +1,49 @@
+{
+  "version": "v3.0.0",
+  "created_at": "2026-10-01T18:43:27.180864+08:00",
+  "base_commit": "a035da723b13000f8d02ad24871730759a96cadd",
+  "successful_floors": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19
+  ],
+  "interval_count": 29,
+  "minimum_interval_s": 1.154364,
+  "mean_interval_s": 2.376878724137931,
+  "maximum_interval_s": 2.958015,
+  "below_3s": 29,
+  "over_2_8s": 3,
+  "failed_attempt_count": 1,
+  "timing_reference": "measured_tcp_press_target_verified",
+  "sources": [
+    {
+      "filename": "20261001_182305_993018.jsonl",
+      "sha256": "8e6eedfaf783d87a20e468731bbeecdcca5acfc797837e3d6e0407282a2e0c6a"
+    },
+    {
+      "filename": "20261001_182840_862412.jsonl",
+      "sha256": "250d3e5199dfd79d227636d2f5d6d435a65851b930bdc847a1d765eed58a17cd"
+    }
+  ],
+  "caveats": [
+    "合并两次运行，6楼采用复测成功结果；不计算跨运行间隔",
+    "软件任务成功不证明按钮物理触发",
+    "本轮全部小于3秒；仍有3个间隔超过2.8秒，不构成所有未来运行的时限保证"
+  ]
+}

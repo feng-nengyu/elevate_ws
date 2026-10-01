@@ -68,12 +68,21 @@ class PlanningFailure(TaskFailure):
     """A plan-only MoveIt goal returned an ordinary planning failure."""
 
 
+class PlanningChainFailure(TaskFailure):
+    """All pure-planning candidates for a button failed."""
+
+
+class PlanningBudgetExceeded(TaskFailure):
+    """A pure-planning chain exceeded its shared budget."""
+
+
 class PiperPbvsController(Node):
     """Coordinate perception and guarded MoveIt coarse positioning."""
 
     ARM_JOINT_NAMES = tuple(f'joint{index}' for index in range(1, 7))
     APPROACH_POSITION_TOLERANCE = 0.008
     X_POSITION_TOLERANCE = 0.006
+    RETRACT_POSITION_TOLERANCE = 0.007
     X_ORIENTATION_TOLERANCE = 0.075
     PRESS_PATH_LATERAL_HALF_WIDTH = 0.008
     SNAPSHOT_NORMAL_ANGLE_LIMIT = math.radians(5.0)
@@ -214,6 +223,9 @@ class PiperPbvsController(Node):
             'preplan_sequence': True,
             'preplan_retry_attempts': 2,
             'transition_plan_candidates': 3,
+            'planning_interval_target_sec': 0.0,
+            'retract_plan_candidates': 2,
+            'sequence_search_width': 2,
             'preplan_retry_timeout_sec': 60.0,
             'sequence_retract_distance_mm': 15.0,
             'base_frame': 'base_link',
@@ -295,13 +307,15 @@ class PiperPbvsController(Node):
                 'x_advance_axis_mode must be base_x or panel_normal'
             )
 
-        integer_names = ('stable_sample_count', 'transition_plan_candidates')
+        integer_names = ('stable_sample_count', 'transition_plan_candidates', 'retract_plan_candidates', 'sequence_search_width')
         for name in integer_names:
             value = int(values[name])
             if value < 1:
                 raise ValueError(f'{name} must be positive')
-            if name == 'transition_plan_candidates' and value > 5:
-                raise ValueError('transition_plan_candidates must be 1..5')
+            if name in ('transition_plan_candidates','retract_plan_candidates') and value > 5:
+                raise ValueError(f'{name} must be 1..5')
+            if name == 'sequence_search_width' and value > 3:
+                raise ValueError('sequence_search_width must be 1..3')
             setattr(self, name, value)
 
         self.coarse_correction_attempts = int(
@@ -351,6 +365,11 @@ class PiperPbvsController(Node):
             if name in excluded:
                 continue
             value = float(value)
+            if name == 'planning_interval_target_sec':
+                if not math.isfinite(value) or not 0.0 <= value <= 3.0:
+                    raise ValueError('planning_interval_target_sec must be within 0..3 seconds')
+                setattr(self,name,value)
+                continue
             if value <= 0.0:
                 raise ValueError(f'{name} must be positive')
             setattr(self, name, value)
@@ -911,6 +930,7 @@ class PiperPbvsController(Node):
         position_tolerance = (
             self.APPROACH_POSITION_TOLERANCE
             if movement_label in ('coarse approach', 'button transition')
+            else self.RETRACT_POSITION_TOLERANCE if movement_label == 'panel retract'
             else self.X_POSITION_TOLERANCE
         )
         deadline = time.monotonic() + 3.0
@@ -943,7 +963,9 @@ class PiperPbvsController(Node):
         raise TaskFailure(
             f'{movement_label} did not reach its measured target; '
             f'position_error={last_position_error * 1000.0:.2f} mm, '
-            f'angular_error={last_angular_error:.6f} rad'
+            f'position_limit={position_tolerance * 1000.0:.2f} mm, '
+            f'angular_error={last_angular_error:.6f} rad, '
+            f'angular_limit={self.X_ORIENTATION_TOLERANCE:.6f} rad'
         )
 
     def _run_x_advance(
@@ -1280,6 +1302,40 @@ class PiperPbvsController(Node):
 
     def _wait_planned_action(self, client, goal, goal_handle, timeout,
                              transition_target=None, press_target=None):
+        """Record pure-planning requests without changing execution behavior."""
+        plan_only = (client is getattr(self,'move_group_client',None)
+                     and isinstance(goal,MoveGroup.Goal) and goal.planning_options.plan_only)
+        started_ns = time.monotonic_ns()
+        result = None
+        error = None
+        if plan_only:
+            self.planning_request_number = getattr(self,'planning_request_number',0)+1
+            request_number = self.planning_request_number
+            context = dict(getattr(self,'planning_record_context',{}))
+        try:
+            result = self._wait_planned_action_impl(client,goal,goal_handle,timeout,
+                                                   transition_target,press_target)
+            return result
+        except Exception as failure:
+            error = {'type':type(failure).__name__,'message':str(failure)}
+            raise
+        finally:
+            if plan_only and hasattr(self,'segment_timing_pub'):
+                ended_ns = time.monotonic_ns()
+                self.segment_timing_pub.publish(String(data=json.dumps({
+                    **context,'kind':'planning_request','request_number':request_number,
+                    'started_monotonic_ns':started_ns,'ended_monotonic_ns':ended_ns,
+                    'elapsed_s':(ended_ns-started_ns)/1e9,'success':result is not None,
+                    'error':error,
+                    'moveit_reported_planning_s':getattr(result,'planning_time',None),
+                    'pipeline':goal.request.pipeline_id or 'ompl',
+                    'planner':goal.request.planner_id,
+                    'start_joint_names':list(goal.request.start_state.joint_state.name),
+                    'start_joint_positions':list(goal.request.start_state.joint_state.position),
+                })))
+
+    def _wait_planned_action_impl(self, client, goal, goal_handle, timeout,
+                             transition_target=None, press_target=None):
         if not client.wait_for_server(timeout_sec=5.0):
             raise TaskFailure('preplanned motion action unavailable')
         stamp = time.monotonic_ns()
@@ -1394,17 +1450,261 @@ class PiperPbvsController(Node):
         t = points[-1].time_from_start
         return t.sec + t.nanosec * 1e-9
 
-    def _plan_shortest_transition(self, goal, goal_handle, name):
-        best = self._plan_segment_with_retry(goal,goal_handle,name,'button transition')
+    def _plan_shortest_transition(self, goal, goal_handle, name, single_attempt=False, check_budget=None):
+        best = (self._wait_planned_action(self.move_group_client,copy.deepcopy(goal),goal_handle,self.moveit_timeout)
+                if single_attempt else
+                self._plan_segment_with_retry(goal,goal_handle,name,'button transition'))
+        original_duration = self._trajectory_duration(best)
+        durations = [original_duration]
         for _ in range(getattr(self,'transition_plan_candidates',1)-1):
             self._guard(goal_handle)
+            if check_budget is not None:
+                check_budget()
             try:
                 candidate = self._wait_planned_action(self.move_group_client,copy.deepcopy(goal),goal_handle,self.moveit_timeout)
             except PlanningFailure:
                 continue
+            durations.append(self._trajectory_duration(candidate))
             if self._trajectory_duration(candidate) < self._trajectory_duration(best):
                 best = candidate
+        if hasattr(self,'segment_timing_pub'):
+            self.segment_timing_pub.publish(String(data=json.dumps({
+                'target': name, 'stage': 'button transition', 'kind': 'planning_selection',
+                'candidate_durations_s': durations,
+                'selected_duration_s': self._trajectory_duration(best),
+                'saved_planned_time_s': original_duration-self._trajectory_duration(best),
+            })))
         return best
+
+    def _plan_shortest_retract(self, goal, goal_handle, name, check_budget):
+        """Compare retreats from the same press endpoint; retain a valid plan."""
+        best = self._wait_planned_action(self.move_group_client,copy.deepcopy(goal),goal_handle,self.moveit_timeout)
+        durations = [self._trajectory_duration(best)]
+        for _ in range(getattr(self,'retract_plan_candidates',1)-1):
+            self._guard(goal_handle)
+            if getattr(self,'planning_interval_target_sec',0.0)>0 and self._trajectory_duration(best)<=0.55:
+                break
+            try:
+                check_budget()
+            except PlanningBudgetExceeded:
+                self._guard(goal_handle)
+                break
+            try:
+                candidate = self._wait_planned_action(self.move_group_client,copy.deepcopy(goal),goal_handle,self.moveit_timeout)
+            except PlanningFailure:
+                continue
+            durations.append(self._trajectory_duration(candidate))
+            if durations[-1] < self._trajectory_duration(best):
+                best = candidate
+        if hasattr(self,'segment_timing_pub'):
+            self.segment_timing_pub.publish(String(data=json.dumps({
+                'target':name,'stage':'panel retract','kind':'retract_selection',
+                'candidate_durations_s':durations,
+                'selected_duration_s':self._trajectory_duration(best),
+                'saved_planned_time_s':durations[0]-self._trajectory_duration(best),
+            })))
+        return best
+
+    def _plan_button_chain_with_retry(self, plan_chain, initial_start, goal_handle, name, candidate_cost=None, candidate_observer=None, shared_deadline=None, candidate_stop=None):
+        """Retry the whole approach/press/retract chain before any execution."""
+        started = time.monotonic()
+        timeout = self.preplan_retry_timeout_sec
+        deadline = shared_deadline if shared_deadline is not None else (started + timeout if timeout > 0 else None)
+        attempt = 0
+        last_error = None
+        best = None
+        best_cost = math.inf
+        successful_costs = []
+        desired = getattr(self,'transition_plan_candidates',1) if candidate_cost is not None else 1
+        def finish():
+            if hasattr(self,'segment_timing_pub'):
+                self.segment_timing_pub.publish(String(data=json.dumps({
+                    'target': name, 'stage': 'button chain', 'kind': 'planning_selection',
+                    'candidate_durations_s': successful_costs, 'selected_duration_s': best_cost,
+                    'saved_planned_time_s': successful_costs[0]-best_cost,
+                    'reference': 'approach_press_retract_combined',
+                })))
+            return best
+        while True:
+            self._guard(goal_handle)
+            if deadline is not None and attempt and time.monotonic() >= deadline:
+                if best is not None:
+                    return finish()
+                raise PlanningChainFailure(f'{name} approach/press/retract planning failed after {timeout:g}s retry budget: {last_error}')
+            attempt += 1
+            try:
+                def check_budget():
+                    self._guard(goal_handle)
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise PlanningBudgetExceeded(f'{name} approach/press/retract planning exceeded {timeout:g}s retry budget')
+                candidate = plan_chain(copy.deepcopy(initial_start), check_budget)
+                cost = candidate_cost(candidate) if candidate_cost is not None else 0.0
+                successful_costs.append(cost)
+                if candidate_observer is not None:
+                    candidate_observer(candidate)
+                if cost < best_cost:
+                    best,best_cost = candidate,cost
+                if len(successful_costs) >= desired or (candidate_stop is not None and candidate_stop(candidate,len(successful_costs))):
+                    return finish()
+            except PlanningBudgetExceeded:
+                self._guard(goal_handle)
+                if best is not None:
+                    return finish()
+                raise
+            except PlanningFailure as error:
+                last_error = error
+                self._guard(goal_handle)
+                exhausted = (time.monotonic() >= deadline if deadline is not None
+                             else attempt > self.preplan_retry_attempts)
+                if exhausted:
+                    if best is not None:
+                        return finish()
+                    detail = f'{timeout:g}s retry budget' if deadline is not None else f'{attempt} chain attempts'
+                    raise PlanningChainFailure(f'{name} approach/press/retract planning failed after {detail}: {error}') from error
+                self.get_logger().warning(
+                    f'【联合规划重试】{name} 第{attempt}组失败：{error}；'
+                    '丢弃本组所有轨迹，从原起点重新规划靠近、按压、回退；尚未运动'
+                )
+
+    @staticmethod
+    def _segment_seconds(segment):
+        points = segment[0].joint_trajectory.points
+        if not points:
+            raise TaskFailure('empty candidate segment')
+        t = points[-1].time_from_start
+        return t.sec + t.nanosec * 1e-9
+
+    def _extend_sequence_candidate(self, parent, name, candidate):
+        segments, end = candidate
+        times = {stage:self._segment_seconds(segment)
+                 for segment in segments for stage in [segment[3]]}
+        intervals = list(parent['intervals'])
+        if parent['buttons']:
+            intervals.append(parent['last_retract_s']
+                             + times.get('button transition',0.0)
+                             + times['panel-normal movement'])
+        return {
+            'buttons': parent['buttons'] + [(name,segments)],
+            'end': copy.deepcopy(end), 'intervals': intervals,
+            'last_retract_s': times['panel retract'],
+            'planned_total_s': parent['planned_total_s'] + sum(times.values()),
+        }
+
+    @staticmethod
+    def _sequence_candidate_rank(candidate):
+        # Minimize the slowest measured-to-measured trajectory interval first.
+        return (max(candidate['intervals'],default=0.0),
+                sum(candidate['intervals']),candidate['planned_total_s'])
+
+    def _plan_adjacent_sequence(self, factories, initial, goal_handle):
+        states = [{'buttons':[], 'end':copy.deepcopy(initial), 'intervals':[],
+                   'last_retract_s':0.0,'planned_total_s':0.0}]
+        width = getattr(self,'sequence_search_width',1)
+        for layer_index,(name, plan_chain) in enumerate(factories):
+            timeout = self.preplan_retry_timeout_sec
+            deadline = time.monotonic()+timeout if timeout > 0 else None
+            extended = []
+            errors = []
+            for parent_index,parent in enumerate(states):
+                self._guard(goal_handle)
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
+                # Reserve a fair share for remaining endpoint branches.
+                branch_deadline = (time.monotonic() + max(0.0,deadline-time.monotonic())/(len(states)-parent_index)
+                                   if deadline is not None else None)
+                def cost(candidate):
+                    return sum(self._segment_seconds(segment) for segment in candidate[0]
+                               if segment[3] != 'coarse approach')
+                def observe(candidate):
+                    extended.append(self._extend_sequence_candidate(parent,name,candidate))
+                def fast_enough(candidate,successful_count):
+                    target = getattr(self,'planning_interval_target_sec',0.0)
+                    if target <= 0 or not parent['buttons']:
+                        return False
+                    value = self._extend_sequence_candidate(parent,name,candidate)
+                    minimum = 1 if layer_index == len(factories)-1 else 2
+                    return (successful_count >= minimum and
+                            max(value['intervals'],default=math.inf) <= target)
+                try:
+                    self._plan_button_chain_with_retry(
+                        plan_chain,parent['end'],goal_handle,name,cost,
+                        candidate_observer=observe,shared_deadline=branch_deadline,candidate_stop=fast_enough,
+                    )
+                except (PlanningChainFailure,PlanningBudgetExceeded) as error:
+                    errors.append(str(error))
+                    continue
+                target = getattr(self,'planning_interval_target_sec',0.0)
+                if (layer_index == len(factories)-1 and target>0 and
+                        any(max(c['intervals'],default=math.inf)<=target for c in extended)):
+                    break
+            if not extended:
+                raise TaskFailure(f'{name} adjacent-sequence planning failed; no complete button chain: {errors}')
+            extended.sort(key=self._sequence_candidate_rank)
+            # Retain different endpoints; duplicate branches cannot help lookahead.
+            states = []
+            for candidate in extended:
+                if any(np.max(np.abs(np.asarray(candidate['end'])-np.asarray(kept['end']))) < 0.001
+                       for kept in states):
+                    continue
+                states.append(candidate)
+                if len(states) >= width:
+                    break
+        selected = min(states,key=self._sequence_candidate_rank)
+        if hasattr(self,'segment_timing_pub'):
+            self.segment_timing_pub.publish(String(data=json.dumps({
+                'target': factories[-1][0], 'stage':'sequence',
+                'kind':'sequence_selection', 'planned_press_intervals_s':selected['intervals'],
+                'maximum_planned_interval_s':max(selected['intervals'],default=0.0),
+                'retained_branches':len(states), 'execution_verified':False,
+                'planning_interval_target_sec':getattr(self,'planning_interval_target_sec',0.0),
+            })))
+        self.get_logger().info(f"【相邻键联合择优】规划到位间隔={selected['intervals']}s；未运动，未包含实机验收/交接")
+        return selected['buttons']
+
+    @staticmethod
+    def _sample_plan_trace(trajectory, maximum_samples=101):
+        """Bound joint-path logging while always keeping both endpoints."""
+        jt = trajectory.joint_trajectory
+        points = jt.points
+        if not points:
+            raise TaskFailure('empty selected plan trace')
+        indices = sorted(set(int(round(v)) for v in
+                             np.linspace(0,len(points)-1,min(maximum_samples,len(points)))))
+        samples = []
+        for index in indices:
+            point = points[index]
+            samples.append({
+                'point_index':index,
+                'time_from_start_s':point.time_from_start.sec+point.time_from_start.nanosec*1e-9,
+                'positions_rad':list(point.positions),
+            })
+        return {'joint_names':list(jt.joint_names),'original_point_count':len(points),
+                'sampled_point_count':len(samples),'points':samples,
+                'reference':'selected_planned_joint_path_downsampled'}
+
+    @staticmethod
+    def _trajectory_joint_diagnostics(trajectory):
+        """Profile selected planned joint motion; this is not hardware feedback."""
+        jt = trajectory.joint_trajectory
+        if not jt.points:
+            raise TaskFailure('empty diagnostic trajectory')
+        profiles = []
+        times = [p.time_from_start.sec+p.time_from_start.nanosec*1e-9 for p in jt.points]
+        for index,name in enumerate(jt.joint_names):
+            positions = [p.positions[index] for p in jt.points]
+            velocities = [abs(p.velocities[index]) for p in jt.points if len(p.velocities)==len(jt.joint_names)]
+            accelerations = [abs(p.accelerations[index]) for p in jt.points if len(p.accelerations)==len(jt.joint_names)]
+            secants = [abs((positions[k]-positions[k-1])/(times[k]-times[k-1]))
+                       for k in range(1,len(times)) if times[k]>times[k-1]]
+            profiles.append({
+                'joint':name, 'delta_rad':positions[-1]-positions[0],
+                'travel_rad':sum(abs(b-a) for a,b in zip(positions,positions[1:])),
+                'range_rad':max(positions)-min(positions),
+                'peak_planned_velocity_rad_s':max(velocities) if velocities else None,
+                'peak_planned_acceleration_rad_s2':max(accelerations) if accelerations else None,
+                'peak_secant_velocity_rad_s':max(secants,default=0.0),
+            })
+        return profiles
 
     def _preplan_snapshot(self, names, goal_handle):
         """Plan every pose before motion, with each prior endpoint as start."""
@@ -1429,8 +1729,8 @@ class PiperPbvsController(Node):
             initial = copy.deepcopy(self.latest_joint_positions)
         if initial is None:
             raise TaskFailure('no initial joints for preplanning')
-        start = initial
-        pending = []
+        factories = []
+        sequence_planning_started_ns = time.monotonic_ns()
         for index, name in enumerate(names):
             position, button_quaternion = self.sequence_snapshot[name]
             control = self._control_quaternion(button_quaternion, self.sequence_roll_reference)
@@ -1447,59 +1747,69 @@ class PiperPbvsController(Node):
             )
             stages = ('coarse approach' if index == 0 else 'button transition',
                       'panel-normal movement', 'panel retract')
-            segments = []
-            for target, stage in zip((approach, press, retreat), stages):
-                if stage == 'button transition' and names[index] == names[index-1]:
-                    self.get_logger().info(f'【重复键优化】{name} 已在同键退回点，跳过零位移转移')
-                    continue
-                self._set_state('PREPLAN_SEQUENCE')
-                pose = self._pose_message(target, control)
-                goal = self._moveit_goal(pose, True)
-                goal.request.start_state.joint_state.name = list(self.ARM_JOINT_NAMES)
-                goal.request.start_state.joint_state.position = [float(value) for value in start]
-                goal.request.start_state.is_diff = True
-                goal.planning_options.planning_scene_diff.is_diff = True
-                self._apply_stage_speed(goal, stage)
-                if stage in ('panel-normal movement', 'panel retract'):
-                    # Keep press/retract inside a narrow normal-axis corridor;
-                    # collision-free endpoints alone do not imply straight motion.
-                    previous = approach if stage == 'panel-normal movement' else press
-                    corridor = PositionConstraint()
-                    corridor.header.frame_id = self.base_frame
-                    corridor.link_name = self.tcp_frame
-                    corridor.weight = 1.0
-                    box = SolidPrimitive()
-                    box.type = SolidPrimitive.BOX
-                    box.dimensions = [
-                        2.0 * self.PRESS_PATH_LATERAL_HALF_WIDTH,
-                        2.0 * self.PRESS_PATH_LATERAL_HALF_WIDTH,
-                        float(np.linalg.norm(target - previous)) + 0.006,
-                    ]
-                    corridor.constraint_region.primitives.append(box)
-                    corridor.constraint_region.primitive_poses.append(
-                        self._pose_message((target + previous) / 2.0, control).pose)
-                    goal.request.path_constraints.position_constraints.append(corridor)
-                # Tighten every preplanned endpoint to limit chain mismatch.
-                constraints = goal.request.goal_constraints[0]
-                constraints.position_constraints[0].constraint_region.primitives[0].dimensions = [0.001] * 3
-                for constraint in constraints.orientation_constraints:
-                    constraint.absolute_x_axis_tolerance = 0.02
-                    constraint.absolute_y_axis_tolerance = 0.02
-                    constraint.absolute_z_axis_tolerance = 0.02
-                planning_started = time.monotonic()
-                result = (self._plan_shortest_transition(goal,goal_handle,name)
-                          if stage == 'button transition' else
-                          self._plan_segment_with_retry(goal,goal_handle,name,stage))
-                trajectory = result.planned_trajectory
-                end = self._final_moveit_arm_target(result)
-                if end is None or not trajectory.joint_trajectory.points:
-                    raise TaskFailure('empty preplanned trajectory')
-                duration = trajectory.joint_trajectory.points[-1].time_from_start
-                seconds = duration.sec + duration.nanosec * 1e-9
-                self.get_logger().info(f'【段规划】{name} {stage}: 规划耗时={time.monotonic()-planning_started:.3f}s, 轨迹时长={seconds:.3f}s')
-                segments.append((trajectory, np.asarray(target), control, stage))
-                start = end
-            pending.append((name, segments))
+            def plan_chain(start, check_budget, index=index, name=name,
+                           approach=approach, press=press, retreat=retreat,
+                           stages=stages, control=control):
+                segments = []
+                for target, stage in zip((approach, press, retreat), stages):
+                    if stage == 'button transition' and names[index] == names[index-1]:
+                        self.get_logger().info(f'【重复键优化】{name} 已在同键退回点，跳过零位移转移')
+                        continue
+                    check_budget()
+                    self._set_state('PREPLAN_SEQUENCE')
+                    pose = self._pose_message(target, control)
+                    goal = self._moveit_goal(pose, True)
+                    goal.request.start_state.joint_state.name = list(self.ARM_JOINT_NAMES)
+                    goal.request.start_state.joint_state.position = [float(value) for value in start]
+                    goal.request.start_state.is_diff = True
+                    goal.planning_options.planning_scene_diff.is_diff = True
+                    self._apply_stage_speed(goal, stage)
+                    if stage in ('panel-normal movement', 'panel retract'):
+                        # Keep press/retract inside a narrow normal-axis corridor;
+                        # collision-free endpoints alone do not imply straight motion.
+                        previous = approach if stage == 'panel-normal movement' else press
+                        corridor = PositionConstraint()
+                        corridor.header.frame_id = self.base_frame
+                        corridor.link_name = self.tcp_frame
+                        corridor.weight = 1.0
+                        box = SolidPrimitive()
+                        box.type = SolidPrimitive.BOX
+                        box.dimensions = [
+                            2.0 * self.PRESS_PATH_LATERAL_HALF_WIDTH,
+                            2.0 * self.PRESS_PATH_LATERAL_HALF_WIDTH,
+                            float(np.linalg.norm(target - previous)) + 0.006,
+                        ]
+                        corridor.constraint_region.primitives.append(box)
+                        corridor.constraint_region.primitive_poses.append(
+                            self._pose_message((target + previous) / 2.0, control).pose)
+                        goal.request.path_constraints.position_constraints.append(corridor)
+                    # Tighten every preplanned endpoint to limit chain mismatch.
+                    constraints = goal.request.goal_constraints[0]
+                    constraints.position_constraints[0].constraint_region.primitives[0].dimensions = [0.001] * 3
+                    for constraint in constraints.orientation_constraints:
+                        constraint.absolute_x_axis_tolerance = 0.02
+                        constraint.absolute_y_axis_tolerance = 0.02
+                        constraint.absolute_z_axis_tolerance = 0.02
+                    planning_started = time.monotonic()
+                    self.planning_record_context = {'target':name,'stage':stage}
+                    try:
+                        result = (self._plan_shortest_retract(goal,goal_handle,name,check_budget)
+                                  if stage == 'panel retract' else
+                                  self._wait_planned_action(self.move_group_client,copy.deepcopy(goal),goal_handle,self.moveit_timeout))
+                    except PlanningFailure as error:
+                        raise PlanningFailure(f'{stage}: {error}') from error
+                    trajectory = result.planned_trajectory
+                    end = self._final_moveit_arm_target(result)
+                    if end is None or not trajectory.joint_trajectory.points:
+                        raise TaskFailure('empty preplanned trajectory')
+                    duration = trajectory.joint_trajectory.points[-1].time_from_start
+                    seconds = duration.sec + duration.nanosec * 1e-9
+                    self.get_logger().info(f'【段规划】{name} {stage}: 规划耗时={time.monotonic()-planning_started:.3f}s, 轨迹时长={seconds:.3f}s')
+                    segments.append((trajectory, np.asarray(target), control, stage))
+                    start = end
+                return segments, start
+            factories.append((name,plan_chain))
+        pending = self._plan_adjacent_sequence(factories,initial,goal_handle)
         with self.data_lock:
             actual = copy.deepcopy(self.latest_joint_positions)
             age = time.monotonic() - self.latest_joint_received
@@ -1507,6 +1817,32 @@ class PiperPbvsController(Node):
             np.abs(np.asarray(actual) - np.asarray(initial))
         ) > 0.003:
             raise TaskFailure('arm moved during preplanning')
+        if hasattr(self,'segment_timing_pub'):
+            for target_name,segments in pending:
+                for trajectory,_,_,stage in segments:
+                    self.segment_timing_pub.publish(String(data=json.dumps({
+                        'target':target_name,'stage':stage,'kind':'joint_plan_profile',
+                        'joints':self._trajectory_joint_diagnostics(trajectory),
+                        'reference':'selected_plan_not_measured_motor_motion',
+                    })))
+        if hasattr(self,'segment_timing_pub'):
+            planning_ended_ns = time.monotonic_ns()
+            self.segment_timing_pub.publish(String(data=json.dumps({
+                'target':names[0],'stage':'sequence','kind':'planning_total',
+                'started_monotonic_ns':sequence_planning_started_ns,
+                'ended_monotonic_ns':planning_ended_ns,
+                'elapsed_s':(planning_ended_ns-sequence_planning_started_ns)/1e9,
+                'selected_buttons':list(names),'includes_visual_sampling':False,
+            })))
+            for target_name,segments in pending:
+                for trajectory,target,quaternion,stage in segments:
+                    self.segment_timing_pub.publish(String(data=json.dumps({
+                        'target':target_name,'stage':stage,'kind':'selected_plan_trace',
+                        'frame_id':self.base_frame,'tcp_frame':self.tcp_frame,
+                        'desired_position_m':list(map(float,target)),
+                        'desired_quaternion_xyzw':list(map(float,quaternion)),
+                        **self._sample_plan_trace(trajectory),
+                    })))
         self.preplanned_buttons = pending
         self.sequence_snapshot_created = time.monotonic()
         self.get_logger().info('【提前规划】全部路径已通过碰撞规划；尚未运动')
@@ -1539,14 +1875,19 @@ class PiperPbvsController(Node):
             self.desired_tcp_pub.publish(self._pose_message(target, quaternion))
             execute = ExecuteTrajectory.Goal()
             execute.trajectory = copy.deepcopy(trajectory)
-            execute.trajectory.joint_trajectory.header.stamp = self.get_clock().now().to_msg()
+            # A cached path has no scheduled wall-clock start. Zero means
+            # start immediately and cannot become stale during action handoff.
+            execute.trajectory.joint_trajectory.header.stamp.sec = 0
+            execute.trajectory.joint_trajectory.header.stamp.nanosec = 0
             self._wait_planned_action(
                 self.execute_trajectory_client, execute, goal_handle,
                 self.moveit_timeout,
                 transition_target=name if stage == 'button transition' else None,
                 press_target=name if stage == 'panel-normal movement' else None,
             )
+            execution_completed = time.monotonic()
             self._verify_target_pose(goal_handle, target, quaternion, stage)
+            verification_completed = time.monotonic()
             if stage == 'panel-normal movement':
                 reached_ns = time.monotonic_ns()
                 self.press_reached_pub.publish(String(data=json.dumps({
@@ -1559,6 +1900,11 @@ class PiperPbvsController(Node):
             self.get_logger().info(f'【段执行完成】{name} {stage}: {elapsed:.3f}s')
             self.segment_timing_pub.publish(String(data=json.dumps({
                 'target': name, 'stage': stage, 'execution_and_verification_s': elapsed,
+                'started_monotonic_ns':int(segment_started*1e9),
+                'completed_monotonic_ns':int(verification_completed*1e9),
+                'trajectory_execution_s': execution_completed-segment_started,
+                'tcp_verification_s': verification_completed-execution_completed,
+                'planned_duration_s': jt.points[-1].time_from_start.sec + jt.points[-1].time_from_start.nanosec*1e-9,
             })))
             if stage in ('coarse approach', 'button transition'):
                 actual_position, actual_quaternion = self._latest_tcp_arrays()

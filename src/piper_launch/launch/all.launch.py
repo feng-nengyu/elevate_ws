@@ -126,6 +126,7 @@ def generate_launch_description():
         DeclareLaunchArgument('start_camera', default_value='true'),
         DeclareLaunchArgument('start_piper', default_value='true'),
         DeclareLaunchArgument('start_moveit', default_value='true'),
+        DeclareLaunchArgument('wrist_joint_acceleration_limit', default_value='0.0'),
         DeclareLaunchArgument('start_pbvs', default_value='true'),
         DeclareLaunchArgument(
             'start_joint_zero_return',
@@ -213,6 +214,9 @@ def generate_launch_description():
         DeclareLaunchArgument('preplan_sequence', default_value='true'),
         DeclareLaunchArgument('preplan_retry_attempts', default_value='2'),
         DeclareLaunchArgument('transition_plan_candidates', default_value='3'),
+        DeclareLaunchArgument('retract_plan_candidates', default_value='2'),
+        DeclareLaunchArgument('sequence_search_width', default_value='2'),
+        DeclareLaunchArgument('planning_interval_target_sec', default_value='0.0'),
         DeclareLaunchArgument('preplan_retry_timeout_sec', default_value='60.0'),
         DeclareLaunchArgument('sequence_snapshot_acquire_timeout', default_value='15.0'),
         DeclareLaunchArgument('sequence_retract_distance_mm', default_value='15.0'),
@@ -341,6 +345,7 @@ def generate_launch_description():
         'start_moveit',
         {
             'use_rviz': LaunchConfiguration('use_rviz'),
+            'wrist_joint_acceleration_limit': LaunchConfiguration('wrist_joint_acceleration_limit'),
             'can_port': LaunchConfiguration('can_port'),
             'allow_trajectory_execution': LaunchConfiguration(
                 'enable_motion'
@@ -410,6 +415,9 @@ def generate_launch_description():
             'preplan_sequence': LaunchConfiguration('preplan_sequence'),
             'preplan_retry_attempts': LaunchConfiguration('preplan_retry_attempts'),
             'transition_plan_candidates': LaunchConfiguration('transition_plan_candidates'),
+            'retract_plan_candidates': LaunchConfiguration('retract_plan_candidates'),
+            'sequence_search_width': LaunchConfiguration('sequence_search_width'),
+            'planning_interval_target_sec': LaunchConfiguration('planning_interval_target_sec'),
             'preplan_retry_timeout_sec': LaunchConfiguration('preplan_retry_timeout_sec'),
             'sequence_snapshot_acquire_timeout': LaunchConfiguration('sequence_snapshot_acquire_timeout'),
             'sequence_retract_distance_mm': LaunchConfiguration('sequence_retract_distance_mm'),
